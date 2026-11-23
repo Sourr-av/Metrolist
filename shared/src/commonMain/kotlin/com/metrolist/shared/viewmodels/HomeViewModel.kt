@@ -234,12 +234,17 @@ class HomeViewModel(
     private val scope: CoroutineScope,
     private val httpClient: HttpClient = GlobalYouTube.client,
     var likedSongsName: String,
+    private val persistLastHomePage: Boolean = true,
 ) {
     val shelfCache = HomeShelfCache()
 
     private val _uiState =
         MutableStateFlow(
-            HomeUiState(isLoading = true, isRestoringCache = true, speedDialSurprisePinned = Settings.shared.speedDialSurprisePinned),
+            HomeUiState(
+                isLoading = true,
+                isRestoringCache = persistLastHomePage,
+                speedDialSurprisePinned = Settings.shared.speedDialSurprisePinned,
+            ),
         )
     val uiState: StateFlow<HomeUiState> =
         combine(
@@ -592,7 +597,7 @@ class HomeViewModel(
                             cachedSelectedChipContent = null
                             speedDialRecommendationItems = emptyList()
                             latestSpeedDialItemMetadata = emptyMap()
-                            Settings.shared.lastHomePageJson = ""
+                            if (persistLastHomePage) Settings.shared.lastHomePageJson = ""
                             _uiState.value = HomeUiState(isLoading = true)
                         }
                         previousSession = session
@@ -1573,7 +1578,7 @@ class HomeViewModel(
         cachedAllContent = null
         cachedSelectedChipContent = null
         chipContentCache = emptyMap()
-        Settings.shared.lastHomePageJson = ""
+        if (persistLastHomePage) Settings.shared.lastHomePageJson = ""
         val selectedChip = _uiState.value.selectedChip?.takeUnless { Settings.shared.hidePodcasts && it.isPodcastChip }
         loadHomeData(
             params = selectedChip?.params,
@@ -1781,6 +1786,7 @@ class HomeViewModel(
     }
 
     private fun loadLastHomePage(): HomeUiState? {
+        if (!persistLastHomePage) return null
         val saved = Settings.shared.lastHomePageJson
         if (saved.isBlank()) return null
         return try {
@@ -1833,6 +1839,7 @@ class HomeViewModel(
     }
 
     private fun saveLastHomePage(state: HomeUiState) {
+        if (!persistLastHomePage) return
         if (state.hasNoHomeContent() || state.sessionKey != GlobalYouTube.innerTube.sessionSnapshot().homeCacheSessionKey()) return
         try {
             Settings.shared.lastHomePageJson =

@@ -75,7 +75,8 @@ fun HomeSectionScreen(
     onNavigateToBrowse: (String, String?, String) -> Unit = { _, _, _ -> },
     homeViewModel: HomeViewModel = koinViewModel(viewModelStoreOwner = checkNotNull(LocalActivity.current as? ComponentActivity)),
 ) {
-    val homeState by homeViewModel.shared.uiState.collectAsState()
+    val activeHome = homeViewModel.activeShared
+    val homeState by activeHome.uiState.collectAsState()
     val text = homeContentText()
     val width = LocalConfiguration.current.screenWidthDp.dp
     val initialSection =
@@ -94,7 +95,7 @@ fun HomeSectionScreen(
             onItemLongClick = null,
             onLoadMore = {},
             error = stringResource(Res.string.error).takeIf { homeState.error != null },
-            onRetry = { homeViewModel.shared.refresh {} },
+            onRetry = { activeHome.refresh {} },
             contentPadding = PaddingValues(bottom = LocalMiniPlayerBottomInset.current),
         )
         return

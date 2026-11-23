@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.metrolist.shared.api.lyrics.AiProviderPresets
 import com.metrolist.shared.backup.AutoBackupFrequency
+import com.metrolist.shared.constants.ActiveHomeSpaceIdKey
 import com.metrolist.shared.constants.ActiveLyricsTextPositionKey
 import com.metrolist.shared.constants.AiSlopBlocklistCacheKey
 import com.metrolist.shared.constants.AiSlopBlocklistUpdatedAtKey
@@ -98,6 +99,7 @@ import com.metrolist.shared.constants.HideNonMusicalVideosKey
 import com.metrolist.shared.constants.HideRecentSearchesKey
 import com.metrolist.shared.constants.HideShortSongsKey
 import com.metrolist.shared.constants.HistoryPlaylistsEnabledKey
+import com.metrolist.shared.constants.HomeSpacesJsonKey
 import com.metrolist.shared.constants.KeepDownloadedPlaylistsJsonKey
 import com.metrolist.shared.constants.KeepPausedOnSongChangeKey
 import com.metrolist.shared.constants.KnownUploadIdsJsonKey
@@ -925,6 +927,8 @@ class Settings(
 
     var hiddenLibraryPlaylistsJson by preference("[]")
     var hiddenHomeItemsJson by preference(HiddenHomeItemsJsonKey, "[]")
+    var homeSpacesJson by preference(HomeSpacesJsonKey, "[]")
+    var activeHomeSpaceId by preference(ActiveHomeSpaceIdKey, "")
 
     var homeSectionVisibility by preference("")
     var lastHomePageJson by blobPreference("lastHomePageJson")

@@ -28,6 +28,8 @@ val ShowPlayerCastButtonKey = "showPlayerCastButton"
 val ShowPlayerVideoButtonKey = "showPlayerVideoButton"
 
 val HiddenHomeItemsJsonKey = "hiddenHomeItemsJson"
+val HomeSpacesJsonKey = "homeSpacesJson"
+val ActiveHomeSpaceIdKey = "activeHomeSpaceId"
 val HiddenLibraryUndoHintShownKey = "hiddenLibraryUndoHintShown"
 val HiddenHomeUndoHintShownKey = "hiddenHomeUndoHintShown"
 val BlockedArtistsUndoHintShownKey = "blockedArtistsUndoHintShown"

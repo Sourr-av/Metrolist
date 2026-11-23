@@ -24,7 +24,8 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -45,10 +46,12 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -72,13 +75,18 @@ import com.metrolist.android.LocalStartupPresentation
 import com.metrolist.android.playback.LocalPlayerConnection
 import com.metrolist.android.ui.component.AdaptiveModalBottomSheet
 import com.metrolist.android.ui.component.tabContentTopPadding
+import com.metrolist.android.ui.components.DeleteSpaceDialog
 import com.metrolist.android.ui.components.ErrorBox
+import com.metrolist.android.ui.components.HomeSpacesBar
+import com.metrolist.android.ui.components.SpaceNameDialog
+import com.metrolist.android.ui.components.SpaceOptionsSheet
 import com.metrolist.android.ui.components.handleItemClick
 import com.metrolist.android.ui.utils.playSong
 import com.metrolist.android.viewmodels.HomeViewModel
 import com.metrolist.shared.auth.AuthManager
 import com.metrolist.shared.db.MusicDatabase
 import com.metrolist.shared.generated.resources.Res
+import com.metrolist.shared.generated.resources.create
 import com.metrolist.shared.generated.resources.error_occurred
 import com.metrolist.shared.generated.resources.home_load_failed
 import com.metrolist.shared.generated.resources.home_offline_empty
@@ -88,13 +96,18 @@ import com.metrolist.shared.generated.resources.player_not_ready
 import com.metrolist.shared.generated.resources.recognize_music
 import com.metrolist.shared.generated.resources.refresh
 import com.metrolist.shared.generated.resources.refreshing
+import com.metrolist.shared.generated.resources.save
 import com.metrolist.shared.generated.resources.shuffle
+import com.metrolist.shared.generated.resources.space_create_title
+import com.metrolist.shared.generated.resources.space_default_name
+import com.metrolist.shared.generated.resources.space_rename_title
 import com.metrolist.shared.generated.resources.try_again
 import com.metrolist.shared.generated.resources.unpin_from_speed_dial
 import com.metrolist.shared.model.BrowseItem
 import com.metrolist.shared.model.SongItem
 import com.metrolist.shared.model.YTItem
 import com.metrolist.shared.model.isAvailableOffline
+import com.metrolist.shared.settings.HomeSpace
 import com.metrolist.shared.settings.LibraryFilterType
 import com.metrolist.shared.ui.LocalIsTv
 import com.metrolist.shared.ui.components.ChipShelf
@@ -142,10 +155,14 @@ fun HomeScreen(
     val playerNotReadyText = stringResource(Res.string.player_not_ready)
     val noPlayableItemsText = stringResource(Res.string.no_playable_items)
     val shuffleText = stringResource(Res.string.shuffle)
+    val defaultSpacePrefix = stringResource(Res.string.space_default_name)
 
     val rootActive = LocalRootContentActive.current
     val context = LocalContext.current
-    val uiState by viewModel.shared.uiState.collectAsStateWithLifecycle()
+    val spaces by viewModel.spaces.collectAsStateWithLifecycle()
+    val activeSpaceId by viewModel.activeSpaceId.collectAsStateWithLifecycle()
+    val activeHome = remember(activeSpaceId) { viewModel.homeModelFor(activeSpaceId) }
+    val uiState by activeHome.uiState.collectAsStateWithLifecycle()
     val startupPresentation = LocalStartupPresentation.current
     SideEffect { startupPresentation?.homeCacheReady = !uiState.isRestoringCache }
     val playerConnection = LocalPlayerConnection.current
@@ -166,22 +183,37 @@ fun HomeScreen(
         !isOffline || item.isAvailableOffline(cachedSongIds)
     }
 
-    val listState = rememberLazyListState()
+    val listStates = remember { mutableMapOf<String?, LazyListState>() }
+    LaunchedEffect(spaces) {
+        val validIds = spaces.mapTo(mutableSetOf<String?>()) { it.id } + null
+        listStates.keys.retainAll(validIds)
+    }
+    val listState = remember(activeSpaceId) { listStates.getOrPut(activeSpaceId) { LazyListState() } }
+    val currentListState by rememberUpdatedState(listState)
+    val spacesScrollState = rememberScrollState()
 
     var lastScrollToTopEvent by rememberSaveable { mutableLongStateOf(-1L) }
     LaunchedEffect(scrollToTopEvents) {
         scrollToTopEvents.collect { event ->
             if (event != lastScrollToTopEvent) {
                 lastScrollToTopEvent = event
-                listState.scrollToItem(0)
+                currentListState.scrollToItem(0)
             }
         }
     }
 
     var selectedMenuItem by remember { mutableStateOf<YTItem?>(null) }
     var showSpeedDialSurpriseMenu by remember { mutableStateOf(false) }
+    var showCreateSpaceDialog by remember { mutableStateOf(false) }
+    var createSpaceName by remember { mutableStateOf("") }
+    var showSpaceOptionsSheet by remember { mutableStateOf(false) }
+    var spaceOptionsTarget by remember { mutableStateOf<HomeSpace?>(null) }
+    var spaceToRename by remember { mutableStateOf<HomeSpace?>(null) }
+    var renameSpaceName by remember { mutableStateOf("") }
+    var spaceToDelete by remember { mutableStateOf<HomeSpace?>(null) }
     val authManager = remember { AuthManager() }
     var isRefreshing by remember { mutableStateOf(false) }
+    LaunchedEffect(activeSpaceId) { isRefreshing = false }
     val showTopRefreshIndicator = isRefreshing || uiState.isRefreshing
     val isTv = LocalIsTv.current
     var showFloatingActions by remember { mutableStateOf(true) }
@@ -244,121 +276,139 @@ fun HomeScreen(
                 startVideo = false,
             )
         }
-        HomeContent(
-            uiState = uiState,
-            shelfCache = viewModel.shared.shelfCache,
-            onLoadMore = viewModel.shared::loadMoreSections,
-            text = sharedText,
-            onVideoItemClick = { item ->
-                when (item) {
-                    is SongItem -> playSong(item, playerConnection, scope)
-                    is BrowseItem -> onNavigateToVideoBrowse(item.id, item.params, item.title)
-                    else -> Unit
-                }
-            },
-            onItemClick = onHomeItemClick,
-            onSpeedDialItemClick = { item ->
-                if (item is SongItem) {
-                    playerConnection?.startRadio(item)
-                } else {
-                    onHomeItemClick(item)
-                }
-            },
-            onItemLongClick = { selectedMenuItem = it },
-            onShuffleSongs = { songs -> playerConnection?.shuffleQueue(songs, queueTitle = sharedText.shuffle) },
-            onPlaySongs = { songs -> playerConnection?.playQueue(songs, queueTitle = sharedText.quickPicks) },
-            onLibraryClick = onNavigateToLibrary,
-            onLocalShelfClick = onNavigateToHomeSection,
-            onArtistClick = { artistId -> onNavigateToArtist(artistId) },
-            onPlayAlbum = { album ->
-                playerConnection?.playAlbum(album.id, album.title)
-            },
-            isItemEnabled = isHomeItemEnabled,
-            onShowSurpriseMenu = { showSpeedDialSurpriseMenu = true },
-            currentSongId = remember(currentSong) { derivedStateOf { currentSong.value?.id } },
-            isPlaying = isPlaying,
-            isLandscape = isLandscape,
-            speedDialSurpriseAtEndOfFirstPage = true,
-            listState = listState,
-            contentPadding =
-                PaddingValues(
-                    top = topPadding,
-                    bottom = miniPlayerInset + 16.dp,
-                ),
-            modifier =
-                Modifier
-                    .fillMaxSize()
-                    .onGloballyPositioned {
-                        startupPresentation?.homeLaidOut = true
-                    }.focusGroup()
-                    .focusRestorer(),
-            header = {
-                if (isTv) {
-                    item(key = "tv_refresh") {
-                        Button(
-                            onClick = {
-                                isRefreshing = true
-                                viewModel.shared.refresh { isRefreshing = false }
-                            },
-                            enabled = rootActive && !showTopRefreshIndicator,
-                            modifier =
-                                Modifier
-                                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                                    .focusRequester(initialTvFocusRequester)
-                                    .tvFocusHighlight(),
-                            shapes = ButtonDefaults.shapes(),
-                        ) {
-                            Text(stringResource(if (showTopRefreshIndicator) Res.string.refreshing else Res.string.refresh))
-                        }
+        key(activeSpaceId) {
+            HomeContent(
+                uiState = uiState,
+                shelfCache = activeHome.shelfCache,
+                onLoadMore = activeHome::loadMoreSections,
+                text = sharedText,
+                onVideoItemClick = { item ->
+                    when (item) {
+                        is SongItem -> playSong(item, playerConnection, scope)
+                        is BrowseItem -> onNavigateToVideoBrowse(item.id, item.params, item.title)
+                        else -> Unit
                     }
-                }
-                when {
-                    uiState.showLoadingPlaceholder -> {
-                        item(key = "home_loading") {
-                            HomeLoadingPlaceholder(isLandscape = isLandscape)
-                        }
+                },
+                onItemClick = onHomeItemClick,
+                onSpeedDialItemClick = { item ->
+                    if (item is SongItem) {
+                        playerConnection?.startRadio(item)
+                    } else {
+                        onHomeItemClick(item)
                     }
-
-                    isOffline && uiState.hasNoHomeContent() -> {
-                        item(key = "home_offline") {
-                            Text(stringResource(Res.string.home_offline_empty), modifier = Modifier.padding(24.dp))
-                        }
-                    }
-
-                    !isOffline && !uiState.error.isNullOrBlank() -> {
-                        item {
-                            Column(
-                                modifier = Modifier.padding(16.dp),
+                },
+                onItemLongClick = { selectedMenuItem = it },
+                onShuffleSongs = { songs -> playerConnection?.shuffleQueue(songs, queueTitle = sharedText.shuffle) },
+                onPlaySongs = { songs -> playerConnection?.playQueue(songs, queueTitle = sharedText.quickPicks) },
+                onLibraryClick = onNavigateToLibrary,
+                onLocalShelfClick = onNavigateToHomeSection,
+                onArtistClick = { artistId -> onNavigateToArtist(artistId) },
+                onPlayAlbum = { album ->
+                    playerConnection?.playAlbum(album.id, album.title)
+                },
+                isItemEnabled = isHomeItemEnabled,
+                onShowSurpriseMenu = { showSpeedDialSurpriseMenu = true },
+                currentSongId = remember(currentSong) { derivedStateOf { currentSong.value?.id } },
+                isPlaying = isPlaying,
+                isLandscape = isLandscape,
+                speedDialSurpriseAtEndOfFirstPage = true,
+                listState = listState,
+                contentPadding =
+                    PaddingValues(
+                        top = topPadding,
+                        bottom = miniPlayerInset + 16.dp,
+                    ),
+                modifier =
+                    Modifier
+                        .fillMaxSize()
+                        .onGloballyPositioned {
+                            startupPresentation?.homeLaidOut = true
+                        }.focusGroup()
+                        .focusRestorer(),
+                header = {
+                    if (isTv) {
+                        item(key = "tv_refresh") {
+                            Button(
+                                onClick = {
+                                    isRefreshing = true
+                                    activeHome.refresh { isRefreshing = false }
+                                },
+                                enabled = rootActive && !showTopRefreshIndicator,
+                                modifier =
+                                    Modifier
+                                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                                        .focusRequester(initialTvFocusRequester)
+                                        .tvFocusHighlight(),
+                                shapes = ButtonDefaults.shapes(),
                             ) {
-                                Text(stringResource(Res.string.error_occurred))
-                                ErrorBox(stringResource(Res.string.home_load_failed))
-                                TextButton(onClick = { viewModel.shared.refresh {} }, shapes = ButtonDefaults.shapes()) {
-                                    Text(stringResource(Res.string.try_again))
-                                }
+                                Text(stringResource(if (showTopRefreshIndicator) Res.string.refreshing else Res.string.refresh))
                             }
                         }
                     }
-
-                    else -> {
-                        item {
-                            ChipShelf(
-                                options = uiState.chips,
-                                selectedOption = selectedChip,
-                                onSelectionChange = viewModel.shared::toggleChip,
-                                label = { it.title },
-                                modifier = Modifier.padding(top = 1.dp),
-                            )
+                    item(key = "home_spaces_bar") {
+                        HomeSpacesBar(
+                            spaces = spaces,
+                            activeSpaceId = activeSpaceId,
+                            onSelectSpace = viewModel::selectSpace,
+                            onCreateSpaceClick = {
+                                createSpaceName = viewModel.nextDefaultSpaceName(defaultSpacePrefix)
+                                showCreateSpaceDialog = true
+                            },
+                            onSpaceOptionsClick = { space ->
+                                spaceOptionsTarget = space
+                                showSpaceOptionsSheet = true
+                            },
+                            scrollState = spacesScrollState,
+                        )
+                    }
+                    when {
+                        uiState.showLoadingPlaceholder -> {
+                            item(key = "home_loading") {
+                                HomeLoadingPlaceholder(isLandscape = isLandscape)
+                            }
                         }
-                        item(key = "wrapped_card") {
-                            WrappedHomeCard(
-                                onClick = onNavigateToWrapped,
-                                onDismissed = { Toast.makeText(context, it, Toast.LENGTH_LONG).show() },
-                            )
+
+                        isOffline && uiState.hasNoHomeContent() -> {
+                            item(key = "home_offline") {
+                                Text(stringResource(Res.string.home_offline_empty), modifier = Modifier.padding(24.dp))
+                            }
+                        }
+
+                        !isOffline && !uiState.error.isNullOrBlank() -> {
+                            item {
+                                Column(
+                                    modifier = Modifier.padding(16.dp),
+                                ) {
+                                    Text(stringResource(Res.string.error_occurred))
+                                    ErrorBox(stringResource(Res.string.home_load_failed))
+                                    TextButton(onClick = { activeHome.refresh {} }, shapes = ButtonDefaults.shapes()) {
+                                        Text(stringResource(Res.string.try_again))
+                                    }
+                                }
+                            }
+                        }
+
+                        else -> {
+                            item {
+                                ChipShelf(
+                                    options = uiState.chips,
+                                    selectedOption = selectedChip,
+                                    onSelectionChange = activeHome::toggleChip,
+                                    label = { it.title },
+                                    modifier = Modifier.padding(top = 1.dp),
+                                )
+                            }
+                            item(key = "wrapped_card") {
+                                WrappedHomeCard(
+                                    onClick = onNavigateToWrapped,
+                                    onDismissed = { Toast.makeText(context, it, Toast.LENGTH_LONG).show() },
+                                )
+                            }
                         }
                     }
-                }
-            },
-        )
+                },
+            )
+        }
     }
 
     Box(
@@ -370,7 +420,7 @@ fun HomeScreen(
                 isRefreshing = isRefreshing,
                 onRefresh = {
                     isRefreshing = true
-                    viewModel.shared.refresh { isRefreshing = false }
+                    activeHome.refresh { isRefreshing = false }
                 },
                 state = pullToRefreshState,
                 indicator = {
@@ -439,7 +489,7 @@ fun HomeScreen(
         onNavigateToAlbum = onNavigateToAlbum,
         onNavigateToArtist = onNavigateToArtist,
         onNavigateToPodcast = onNavigateToPodcast,
-        onSongMetadataUpdated = viewModel.shared::updateSongMetadata,
+        onSongMetadataUpdated = activeHome::updateSongMetadata,
         active = rootActive,
     )
 
@@ -447,8 +497,68 @@ fun HomeScreen(
         HomeSpeedDialSurpriseMenu(
             isPinned = uiState.speedDialSurprisePinned,
             onDismiss = { showSpeedDialSurpriseMenu = false },
-            onSetPinned = viewModel.shared::setSpeedDialSurprisePinned,
+            onSetPinned = activeHome::setSpeedDialSurprisePinned,
         )
+    }
+
+    PopupVisibility(
+        visible = rootActive && showSpaceOptionsSheet && spaceOptionsTarget != null,
+        onHidden = { spaceOptionsTarget = null },
+    ) {
+        spaceOptionsTarget?.let { space ->
+            SpaceOptionsSheet(
+                space = space,
+                onDismiss = { showSpaceOptionsSheet = false },
+                onRenameClick = {
+                    renameSpaceName = space.name
+                    spaceToRename = space
+                },
+                onDeleteClick = { spaceToDelete = space },
+            )
+        }
+    }
+
+    if (rootActive && showCreateSpaceDialog) {
+        SpaceNameDialog(
+            title = stringResource(Res.string.space_create_title),
+            confirmLabel = stringResource(Res.string.create),
+            value = createSpaceName,
+            allowBlankConfirm = true,
+            onValueChange = { createSpaceName = it },
+            onDismiss = { showCreateSpaceDialog = false },
+            onConfirm = {
+                viewModel.createSpace(createSpaceName, defaultSpacePrefix)
+                showCreateSpaceDialog = false
+            },
+        )
+    }
+
+    if (rootActive) {
+        spaceToRename?.let { space ->
+            SpaceNameDialog(
+                title = stringResource(Res.string.space_rename_title),
+                confirmLabel = stringResource(Res.string.save),
+                value = renameSpaceName,
+                allowBlankConfirm = false,
+                onValueChange = { renameSpaceName = it },
+                onDismiss = { spaceToRename = null },
+                onConfirm = {
+                    viewModel.renameSpace(space.id, renameSpaceName)
+                    spaceToRename = null
+                },
+            )
+        }
+
+        spaceToDelete?.let { space ->
+            DeleteSpaceDialog(
+                space = space,
+                onDismiss = { spaceToDelete = null },
+                onConfirm = {
+                    viewModel.deleteSpace(space.id)
+                    spaceToDelete = null
+                },
+            )
+        }
     }
 }
 

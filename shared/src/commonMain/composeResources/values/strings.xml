@@ -5623,4 +5623,12 @@
     <string name="wrapped_home_title">Your %1$s Wrapped is here</string>
     <string name="wrapped_home_body">See your year in music and share it.</string>
     <string name="wrapped_home_card_dismissed">You can find your %1$s Wrapped in Statistics until December 31.</string>
+    <string name="space_default_name">Space</string>
+    <string name="space_new">New space</string>
+    <string name="space_create_title">Create space</string>
+    <string name="space_rename_title">Rename space</string>
+    <string name="space_delete_title">Delete space?</string>
+    <string name="space_name_label">Space name</string>
+    <string name="space_options_content_description">Space options</string>
+    <string name="create">Create</string>
 </resources>
