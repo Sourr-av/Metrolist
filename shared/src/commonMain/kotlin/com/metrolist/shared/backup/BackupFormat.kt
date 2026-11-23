@@ -95,6 +95,16 @@ fun requireSupportedBackupDatabaseVersion(
 // Holds per-query scratch rows only, so its presence says nothing about the backup's version.
 private val TRANSIENT_TABLES = setOf("history_stat_exclusion")
 
+private val SPACE_REC_TABLES =
+    setOf(
+        "artist_profile",
+        "track_class",
+        "space_feed_cache",
+        "space_shown",
+        "space_seed_arm",
+        "space_play_event",
+    )
+
 fun requireSupportedBackupDatabaseTables(
     version: Int,
     allTables: Set<String>,
@@ -108,7 +118,9 @@ fun requireSupportedBackupDatabaseTables(
             version < 50 -> ROOM_DATA_TABLES
             version < 51 -> ROOM_DATA_TABLES + "import_track_match"
             else -> ROOM_DATA_TABLES + setOf("import_track_match", "history_snapshot", "history_provenance", "history_import_policy")
-        } + (if (version >= 58) setOf("pending_scrobble") else emptySet())
+        } +
+            (if (version >= 58) setOf("pending_scrobble") else emptySet()) +
+            (if (version >= 69) SPACE_REC_TABLES else emptySet())
     val supported =
         when {
             version == 1 -> {
@@ -123,7 +135,8 @@ fun requireSupportedBackupDatabaseTables(
                 ROOM_DATA_TABLES + "cached_audio" +
                     (if (version >= 50) setOf("import_track_match") else emptySet()) +
                     (if (version >= 51) setOf("history_snapshot", "history_provenance", "history_import_policy") else emptySet()) +
-                    (if (version >= 58) setOf("pending_scrobble") else emptySet())
+                    (if (version >= 58) setOf("pending_scrobble") else emptySet()) +
+                    (if (version >= 69) SPACE_REC_TABLES else emptySet())
             }
         }
     val speedDialTables = tables.intersect(setOf("speed_dial", "speed_dial_item"))

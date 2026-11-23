@@ -13,10 +13,12 @@ import androidx.room3.RoomDatabaseConstructor
 import com.metrolist.shared.db.daos.DatabaseDao
 import com.metrolist.shared.db.daos.ImportTrackMatchDao
 import com.metrolist.shared.db.daos.PendingScrobbleDao
+import com.metrolist.shared.db.daos.SpaceRecDao
 import com.metrolist.shared.db.daos.SpeedDialDao
 import com.metrolist.shared.db.entities.AlbumArtistMap
 import com.metrolist.shared.db.entities.AlbumEntity
 import com.metrolist.shared.db.entities.ArtistEntity
+import com.metrolist.shared.db.entities.ArtistProfileEntity
 import com.metrolist.shared.db.entities.CachedAudioEntity
 import com.metrolist.shared.db.entities.Event
 import com.metrolist.shared.db.entities.FormatEntity
@@ -40,10 +42,28 @@ import com.metrolist.shared.db.entities.SongArtistMap
 import com.metrolist.shared.db.entities.SongEntity
 import com.metrolist.shared.db.entities.SortedSongAlbumMap
 import com.metrolist.shared.db.entities.SortedSongArtistMap
+import com.metrolist.shared.db.entities.SpaceFeedCacheEntity
+import com.metrolist.shared.db.entities.SpacePlayEventEntity
+import com.metrolist.shared.db.entities.SpaceSeedArmEntity
+import com.metrolist.shared.db.entities.SpaceShownEntity
 import com.metrolist.shared.db.entities.SpeedDialItem
+import com.metrolist.shared.db.entities.TrackClassEntity
 import com.metrolist.shared.scrobble.PendingScrobble
 
-const val DATABASE_VERSION = 68
+const val DATABASE_VERSION = 69
+
+internal val MIGRATION_68_69_SQL =
+    listOf(
+        """CREATE TABLE IF NOT EXISTS `artist_profile` (`artistId` TEXT NOT NULL, `name` TEXT NOT NULL, `languageVotesJson` TEXT NOT NULL, `totalVotes` REAL NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`artistId`))""",
+        """CREATE TABLE IF NOT EXISTS `track_class` (`videoId` TEXT NOT NULL, `language` TEXT, `languageConfidence` REAL NOT NULL, `genre` TEXT, `evidence` TEXT NOT NULL, `checkedAt` INTEGER NOT NULL, PRIMARY KEY(`videoId`))""",
+        """CREATE TABLE IF NOT EXISTS `space_feed_cache` (`spaceId` TEXT NOT NULL, `payloadJson` TEXT NOT NULL, `savedAt` INTEGER NOT NULL, `refreshSeq` INTEGER NOT NULL, PRIMARY KEY(`spaceId`))""",
+        """CREATE TABLE IF NOT EXISTS `space_shown` (`spaceId` TEXT NOT NULL, `videoId` TEXT NOT NULL, `refreshSeq` INTEGER NOT NULL, `shownAt` INTEGER NOT NULL, PRIMARY KEY(`spaceId`, `videoId`))""",
+        """CREATE INDEX IF NOT EXISTS `index_space_shown_spaceId_refreshSeq` ON `space_shown` (`spaceId`, `refreshSeq`)""",
+        """CREATE TABLE IF NOT EXISTS `space_seed_arm` (`spaceId` TEXT NOT NULL, `artistId` TEXT NOT NULL, `seedVideoId` TEXT NOT NULL, `completions` INTEGER NOT NULL, `skips` INTEGER NOT NULL, `lastUsedSeq` INTEGER NOT NULL, PRIMARY KEY(`spaceId`, `artistId`))""",
+        """CREATE TABLE IF NOT EXISTS `space_play_event` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `videoId` TEXT NOT NULL, `spaceId` TEXT NOT NULL, `seedArtistId` TEXT, `source` TEXT NOT NULL, `playedAt` INTEGER NOT NULL)""",
+        """CREATE INDEX IF NOT EXISTS `index_space_play_event_spaceId_playedAt` ON `space_play_event` (`spaceId`, `playedAt`)""",
+        """CREATE INDEX IF NOT EXISTS `index_space_play_event_videoId` ON `space_play_event` (`videoId`)""",
+    )
 
 internal val MIGRATION_67_68_SQL =
     listOf(
@@ -269,6 +289,12 @@ internal val MIGRATION_53_54_SQL =
         PodcastEntity::class,
         CachedAudioEntity::class,
         PendingScrobble::class,
+        ArtistProfileEntity::class,
+        TrackClassEntity::class,
+        SpaceFeedCacheEntity::class,
+        SpaceShownEntity::class,
+        SpaceSeedArmEntity::class,
+        SpacePlayEventEntity::class,
     ],
     views = [
         SortedSongArtistMap::class,
@@ -288,6 +314,8 @@ abstract class MusicDatabase : RoomDatabase() {
     abstract fun importTrackMatchDao(): ImportTrackMatchDao
 
     abstract fun speedDialDao(): SpeedDialDao
+
+    abstract fun spaceRecDao(): SpaceRecDao
 }
 
 @Suppress("KotlinNoActualForExpect")
