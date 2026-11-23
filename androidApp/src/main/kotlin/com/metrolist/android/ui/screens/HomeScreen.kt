@@ -78,11 +78,14 @@ import com.metrolist.android.ui.component.tabContentTopPadding
 import com.metrolist.android.ui.components.DeleteSpaceDialog
 import com.metrolist.android.ui.components.ErrorBox
 import com.metrolist.android.ui.components.HomeSpacesBar
-import com.metrolist.android.ui.components.SpaceNameDialog
+import com.metrolist.android.ui.components.SpaceActiveFiltersBar
+import com.metrolist.android.ui.components.SpaceEditorSheet
+import com.metrolist.android.ui.components.SpaceFilteredEmptyState
 import com.metrolist.android.ui.components.SpaceOptionsSheet
 import com.metrolist.android.ui.components.handleItemClick
 import com.metrolist.android.ui.utils.playSong
 import com.metrolist.android.viewmodels.HomeViewModel
+import com.metrolist.shared.api.lastfm.LastFM
 import com.metrolist.shared.auth.AuthManager
 import com.metrolist.shared.db.MusicDatabase
 import com.metrolist.shared.generated.resources.Res
@@ -100,7 +103,11 @@ import com.metrolist.shared.generated.resources.save
 import com.metrolist.shared.generated.resources.shuffle
 import com.metrolist.shared.generated.resources.space_create_title
 import com.metrolist.shared.generated.resources.space_default_name
-import com.metrolist.shared.generated.resources.space_rename_title
+import com.metrolist.shared.generated.resources.space_edit_title
+import com.metrolist.shared.generated.resources.space_shelf_albums
+import com.metrolist.shared.generated.resources.space_shelf_artists
+import com.metrolist.shared.generated.resources.space_shelf_playlists
+import com.metrolist.shared.generated.resources.space_shelf_songs
 import com.metrolist.shared.generated.resources.try_again
 import com.metrolist.shared.generated.resources.unpin_from_speed_dial
 import com.metrolist.shared.model.BrowseItem
@@ -109,6 +116,7 @@ import com.metrolist.shared.model.YTItem
 import com.metrolist.shared.model.isAvailableOffline
 import com.metrolist.shared.settings.HomeSpace
 import com.metrolist.shared.settings.LibraryFilterType
+import com.metrolist.shared.spaces.SpaceFallbackShelfTitles
 import com.metrolist.shared.ui.LocalIsTv
 import com.metrolist.shared.ui.components.ChipShelf
 import com.metrolist.shared.ui.components.HomeLoadingPlaceholder
@@ -156,12 +164,26 @@ fun HomeScreen(
     val noPlayableItemsText = stringResource(Res.string.no_playable_items)
     val shuffleText = stringResource(Res.string.shuffle)
     val defaultSpacePrefix = stringResource(Res.string.space_default_name)
+    val spaceShelfSongs = stringResource(Res.string.space_shelf_songs)
+    val spaceShelfAlbums = stringResource(Res.string.space_shelf_albums)
+    val spaceShelfPlaylists = stringResource(Res.string.space_shelf_playlists)
+    val spaceShelfArtists = stringResource(Res.string.space_shelf_artists)
+    val spaceShelfTitles =
+        remember(spaceShelfSongs, spaceShelfAlbums, spaceShelfPlaylists, spaceShelfArtists) {
+            SpaceFallbackShelfTitles(
+                songs = spaceShelfSongs,
+                albums = spaceShelfAlbums,
+                playlists = spaceShelfPlaylists,
+                artists = spaceShelfArtists,
+            )
+        }
 
     val rootActive = LocalRootContentActive.current
     val context = LocalContext.current
     val spaces by viewModel.spaces.collectAsStateWithLifecycle()
     val activeSpaceId by viewModel.activeSpaceId.collectAsStateWithLifecycle()
-    val activeHome = remember(activeSpaceId) { viewModel.homeModelFor(activeSpaceId) }
+    val activeSpace = remember(spaces, activeSpaceId) { spaces.firstOrNull { it.id == activeSpaceId } }
+    val activeHome = remember(activeSpaceId, spaceShelfTitles) { viewModel.homeModelFor(activeSpaceId, spaceShelfTitles) }
     val uiState by activeHome.uiState.collectAsStateWithLifecycle()
     val startupPresentation = LocalStartupPresentation.current
     SideEffect { startupPresentation?.homeCacheReady = !uiState.isRestoringCache }
@@ -204,13 +226,16 @@ fun HomeScreen(
 
     var selectedMenuItem by remember { mutableStateOf<YTItem?>(null) }
     var showSpeedDialSurpriseMenu by remember { mutableStateOf(false) }
-    var showCreateSpaceDialog by remember { mutableStateOf(false) }
+    var showCreateSpaceSheet by remember { mutableStateOf(false) }
     var createSpaceName by remember { mutableStateOf("") }
     var showSpaceOptionsSheet by remember { mutableStateOf(false) }
     var spaceOptionsTarget by remember { mutableStateOf<HomeSpace?>(null) }
-    var spaceToRename by remember { mutableStateOf<HomeSpace?>(null) }
-    var renameSpaceName by remember { mutableStateOf("") }
+    var showEditSpaceSheet by remember { mutableStateOf(false) }
+    var editSpaceTarget by remember { mutableStateOf<HomeSpace?>(null) }
+    var expandLastFmKeyInEditor by remember { mutableStateOf(false) }
     var spaceToDelete by remember { mutableStateOf<HomeSpace?>(null) }
+    var lastFmConfigVersion by remember { mutableLongStateOf(0L) }
+    val lastFmConfigured = remember(lastFmConfigVersion) { LastFM.apiKeyConfigured() }
     val authManager = remember { AuthManager() }
     var isRefreshing by remember { mutableStateOf(false) }
     LaunchedEffect(activeSpaceId) { isRefreshing = false }
@@ -352,7 +377,8 @@ fun HomeScreen(
                             onSelectSpace = viewModel::selectSpace,
                             onCreateSpaceClick = {
                                 createSpaceName = viewModel.nextDefaultSpaceName(defaultSpacePrefix)
-                                showCreateSpaceDialog = true
+                                expandLastFmKeyInEditor = false
+                                showCreateSpaceSheet = true
                             },
                             onSpaceOptionsClick = { space ->
                                 spaceOptionsTarget = space
@@ -360,6 +386,24 @@ fun HomeScreen(
                             },
                             scrollState = spacesScrollState,
                         )
+                    }
+                    if (activeSpace?.hasFilters == true) {
+                        item(key = "home_space_active_filters") {
+                            SpaceActiveFiltersBar(
+                                space = activeSpace,
+                                lastFmConfigured = lastFmConfigured,
+                                onEditFiltersClick = {
+                                    editSpaceTarget = activeSpace
+                                    expandLastFmKeyInEditor = false
+                                    showEditSpaceSheet = true
+                                },
+                                onConfigureLastFmKeyClick = {
+                                    editSpaceTarget = activeSpace
+                                    expandLastFmKeyInEditor = true
+                                    showEditSpaceSheet = true
+                                },
+                            )
+                        }
                     }
                     when {
                         uiState.showLoadingPlaceholder -> {
@@ -386,6 +430,24 @@ fun HomeScreen(
                                     }
                                 }
                             }
+                        }
+
+                        activeSpace?.hasFilters == true && uiState.hasNoHomeContent() -> {
+                            item(key = "space_filtered_empty") {
+                                SpaceFilteredEmptyState(
+                                    space = activeSpace,
+                                    onEditFiltersClick = {
+                                        editSpaceTarget = activeSpace
+                                        expandLastFmKeyInEditor = false
+                                        showEditSpaceSheet = true
+                                    },
+                                    onRetryClick = { activeHome.refresh {} },
+                                )
+                            }
+                        }
+
+                        activeSpace?.hasFilters == true -> {
+                            // Filtered Spaces use their own language/genre filter bar instead of global mood chips.
                         }
 
                         else -> {
@@ -509,46 +571,78 @@ fun HomeScreen(
             SpaceOptionsSheet(
                 space = space,
                 onDismiss = { showSpaceOptionsSheet = false },
-                onRenameClick = {
-                    renameSpaceName = space.name
-                    spaceToRename = space
+                onEditClick = {
+                    editSpaceTarget = space
+                    expandLastFmKeyInEditor = false
+                    showEditSpaceSheet = true
                 },
                 onDeleteClick = { spaceToDelete = space },
             )
         }
     }
 
-    if (rootActive && showCreateSpaceDialog) {
-        SpaceNameDialog(
+    PopupVisibility(visible = rootActive && showCreateSpaceSheet) {
+        SpaceEditorSheet(
             title = stringResource(Res.string.space_create_title),
             confirmLabel = stringResource(Res.string.create),
-            value = createSpaceName,
-            allowBlankConfirm = true,
-            onValueChange = { createSpaceName = it },
-            onDismiss = { showCreateSpaceDialog = false },
-            onConfirm = {
-                viewModel.createSpace(createSpaceName, defaultSpacePrefix)
-                showCreateSpaceDialog = false
+            initialName = createSpaceName,
+            initialLanguages = emptyList(),
+            initialGenres = emptyList(),
+            allowBlankName = true,
+            expandLastFmKeyInitially = expandLastFmKeyInEditor,
+            onSaveLastFmApiKey = { key ->
+                viewModel.saveLastFmApiKey(key)
+                lastFmConfigVersion++
+            },
+            onDismiss = { showCreateSpaceSheet = false },
+            onConfirm = { name, languages, genres ->
+                viewModel.createSpace(
+                    name = name,
+                    defaultPrefix = defaultSpacePrefix,
+                    languages = languages,
+                    genres = genres,
+                    shelfTitles = spaceShelfTitles,
+                )
+                showCreateSpaceSheet = false
             },
         )
     }
 
-    if (rootActive) {
-        spaceToRename?.let { space ->
-            SpaceNameDialog(
-                title = stringResource(Res.string.space_rename_title),
+    PopupVisibility(
+        visible = rootActive && showEditSpaceSheet && editSpaceTarget != null,
+        onHidden = {
+            editSpaceTarget = null
+            expandLastFmKeyInEditor = false
+        },
+    ) {
+        editSpaceTarget?.let { space ->
+            SpaceEditorSheet(
+                title = stringResource(Res.string.space_edit_title),
                 confirmLabel = stringResource(Res.string.save),
-                value = renameSpaceName,
-                allowBlankConfirm = false,
-                onValueChange = { renameSpaceName = it },
-                onDismiss = { spaceToRename = null },
-                onConfirm = {
-                    viewModel.renameSpace(space.id, renameSpaceName)
-                    spaceToRename = null
+                initialName = space.name,
+                initialLanguages = space.languages,
+                initialGenres = space.genres,
+                allowBlankName = false,
+                expandLastFmKeyInitially = expandLastFmKeyInEditor,
+                onSaveLastFmApiKey = { key ->
+                    viewModel.saveLastFmApiKey(key)
+                    lastFmConfigVersion++
+                },
+                onDismiss = { showEditSpaceSheet = false },
+                onConfirm = { name, languages, genres ->
+                    viewModel.updateSpace(
+                        spaceId = space.id,
+                        newName = name,
+                        languages = languages,
+                        genres = genres,
+                    )
+                    showEditSpaceSheet = false
                 },
             )
         }
+    }
 
+    if (rootActive) {
         spaceToDelete?.let { space ->
             DeleteSpaceDialog(
                 space = space,

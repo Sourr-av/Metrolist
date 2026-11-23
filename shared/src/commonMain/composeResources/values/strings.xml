@@ -5626,9 +5626,27 @@
     <string name="space_default_name">Space</string>
     <string name="space_new">New space</string>
     <string name="space_create_title">Create space</string>
+    <string name="space_edit_title">Edit space</string>
     <string name="space_rename_title">Rename space</string>
     <string name="space_delete_title">Delete space?</string>
     <string name="space_name_label">Space name</string>
     <string name="space_options_content_description">Space options</string>
+    <string name="space_edit_action">Edit name &amp; filters</string>
+    <string name="space_languages_label">Languages (priority)</string>
+    <string name="space_languages_hint">Search or add a language (e.g. English, Hindi, Japanese)</string>
+    <string name="space_genres_label">Genres</string>
+    <string name="space_genres_hint">Search or add a genre (e.g. Hip-Hop, Soundtracks)</string>
+    <string name="space_add_custom_filter">Add “%1$s”</string>
+    <string name="space_filters_note">Songs outside your chosen languages and genres are filtered out using Last.fm tags.</string>
+    <string name="space_lastfm_key_missing">Add a Last.fm API key for tag-based filtering</string>
+    <string name="space_lastfm_key_label">Last.fm API key</string>
+    <string name="space_lastfm_key_save">Apply key</string>
+    <string name="space_edit_filters">Edit filters</string>
+    <string name="space_filtered_empty_title">No matching music found</string>
+    <string name="space_filtered_empty_body">Nothing matched your language and genre filters right now. Try adjusting your filters or refreshing.</string>
+    <string name="space_shelf_songs">Recommended songs</string>
+    <string name="space_shelf_albums">Matching albums</string>
+    <string name="space_shelf_playlists">Matching playlists</string>
+    <string name="space_shelf_artists">Matching artists</string>
     <string name="create">Create</string>
 </resources>

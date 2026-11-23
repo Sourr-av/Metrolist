@@ -2,9 +2,12 @@ package com.metrolist.android.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.metrolist.shared.api.lastfm.LastFM
 import com.metrolist.shared.db.MusicDatabase
 import com.metrolist.shared.settings.HomeSpace
 import com.metrolist.shared.settings.HomeSpaces
+import com.metrolist.shared.settings.Settings
+import com.metrolist.shared.spaces.SpaceFallbackShelfTitles
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -37,10 +40,18 @@ class HomeViewModel(
     val activeShared: SharedHomeViewModel
         get() = homeModelFor(_activeSpaceId.value)
 
-    fun homeModelFor(spaceId: String?): SharedHomeViewModel {
-        if (spaceId == null || _spaces.value.none { it.id == spaceId }) return shared
+    fun activeSpace(): HomeSpace? {
+        val id = _activeSpaceId.value ?: return null
+        return _spaces.value.firstOrNull { it.id == id }
+    }
+
+    fun homeModelFor(
+        spaceId: String?,
+        shelfTitles: SpaceFallbackShelfTitles = SpaceFallbackShelfTitles(),
+    ): SharedHomeViewModel {
+        val space = spaceId?.let { id -> _spaces.value.firstOrNull { it.id == id } } ?: return shared
         return spaceSessions
-            .getOrPut(spaceId) {
+            .getOrPut(space.id) {
                 val spaceScope =
                     CoroutineScope(SupervisorJob(viewModelScope.coroutineContext[Job]) + Dispatchers.Main.immediate)
                 SpaceHomeSession(
@@ -51,6 +62,8 @@ class HomeViewModel(
                             scope = spaceScope,
                             likedSongsName = likedSongsName,
                             persistLastHomePage = false,
+                            initialSpaceFilter = space.filterSpec.takeIf { it.isActive },
+                            spaceShelfTitles = shelfTitles,
                         ),
                 )
             }.model
@@ -63,11 +76,20 @@ class HomeViewModel(
     fun createSpace(
         name: String,
         defaultPrefix: String,
+        languages: List<String> = emptyList(),
+        genres: List<String> = emptyList(),
+        shelfTitles: SpaceFallbackShelfTitles = SpaceFallbackShelfTitles(),
     ): HomeSpace {
-        val created = HomeSpaces.create(name = name, defaultPrefix = defaultPrefix)
+        val created =
+            HomeSpaces.create(
+                name = name,
+                defaultPrefix = defaultPrefix,
+                languages = languages,
+                genres = genres,
+            )
         _spaces.value = HomeSpaces.all()
         _activeSpaceId.value = created.id
-        homeModelFor(created.id)
+        homeModelFor(created.id, shelfTitles = shelfTitles)
         return created
     }
 
@@ -76,6 +98,35 @@ class HomeViewModel(
         newName: String,
     ) {
         _spaces.value = HomeSpaces.rename(spaceId, newName)
+    }
+
+    fun updateSpace(
+        spaceId: String,
+        newName: String,
+        languages: List<String>,
+        genres: List<String>,
+    ) {
+        val updatedSpaces =
+            HomeSpaces.update(
+                id = spaceId,
+                newName = newName,
+                languages = languages,
+                genres = genres,
+            )
+        _spaces.value = updatedSpaces
+        val updatedSpace = updatedSpaces.firstOrNull { it.id == spaceId }
+        val newFilter = updatedSpace?.filterSpec?.takeIf { it.isActive }
+        spaceSessions[spaceId]?.model?.updateSpaceFilter(newFilter)
+    }
+
+    fun saveLastFmApiKey(apiKey: String) {
+        val trimmed = apiKey.trim()
+        Settings.shared.spacesLastFmApiKey = trimmed
+        LastFM.setSpacesApiKey(trimmed)
+        val active = activeSpace()
+        if (active != null && active.hasFilters) {
+            homeModelFor(active.id).refresh {}
+        }
     }
 
     fun deleteSpace(spaceId: String) {

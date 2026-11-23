@@ -288,6 +288,7 @@ class App :
     private fun initializeApp(appStart: Long) {
         checkAndroidDatabaseVersion(this)
         LastFM.initialize(SharedBuildConfig.LASTFM_API_KEY, SharedBuildConfig.LASTFM_SECRET)
+        LastFM.setSpacesApiKey(Settings.shared.spacesLastFmApiKey)
         LastFM.renderedPageLoader = LastFmGalleryBrowser::load
         playbackNetworkMonitor.start()
         AppLocale.sync(this)

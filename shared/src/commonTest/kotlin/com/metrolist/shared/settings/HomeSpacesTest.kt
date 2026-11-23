@@ -7,7 +7,9 @@ package com.metrolist.shared.settings
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class HomeSpacesTest {
     private fun createStore(
@@ -76,5 +78,42 @@ class HomeSpacesTest {
         assertEquals(emptyList(), store.all())
         assertNull(store.activeId())
         assertEquals("Space 1", store.nextDefaultName("Space"))
+    }
+
+    @Test
+    fun createAndUpdatePersistNormalizedLanguageAndGenreFilters() {
+        val store = createStore()
+        val created =
+            store.create(
+                name = "English Hip-Hop",
+                defaultPrefix = "Space",
+                languages = listOf("english", " English ", ""),
+                genres = listOf("hip_hop", "trap", "hip_hop"),
+            )
+
+        assertTrue(created.hasFilters)
+        assertEquals(listOf("english"), created.languages)
+        assertEquals(listOf("hip_hop", "trap"), created.genres)
+
+        store.update(
+            id = created.id,
+            newName = "Japanese Soundtracks",
+            languages = listOf("japanese"),
+            genres = listOf("soundtracks_video_game"),
+        )
+        val updated = store.all().single()
+        assertEquals("Japanese Soundtracks", updated.name)
+        assertEquals(listOf("japanese"), updated.languages)
+        assertEquals(listOf("soundtracks_video_game"), updated.genres)
+    }
+
+    @Test
+    fun decodesLegacySpacesWithoutFiltersField() {
+        val store = createStore(initialSpaces = """[{"id":"space_1","name":"Classic"}]""")
+        val space = store.all().single()
+        assertEquals("Classic", space.name)
+        assertFalse(space.hasFilters)
+        assertEquals(emptyList(), space.languages)
+        assertEquals(emptyList(), space.genres)
     }
 }

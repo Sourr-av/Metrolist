@@ -100,6 +100,7 @@ import com.metrolist.shared.constants.HideRecentSearchesKey
 import com.metrolist.shared.constants.HideShortSongsKey
 import com.metrolist.shared.constants.HistoryPlaylistsEnabledKey
 import com.metrolist.shared.constants.HomeSpacesJsonKey
+import com.metrolist.shared.constants.SpacesLastFmApiKey
 import com.metrolist.shared.constants.KeepDownloadedPlaylistsJsonKey
 import com.metrolist.shared.constants.KeepPausedOnSongChangeKey
 import com.metrolist.shared.constants.KnownUploadIdsJsonKey
@@ -929,6 +930,7 @@ class Settings(
     var hiddenHomeItemsJson by preference(HiddenHomeItemsJsonKey, "[]")
     var homeSpacesJson by preference(HomeSpacesJsonKey, "[]")
     var activeHomeSpaceId by preference(ActiveHomeSpaceIdKey, "")
+    var spacesLastFmApiKey by preference(SpacesLastFmApiKey, "")
 
     var homeSectionVisibility by preference("")
     var lastHomePageJson by blobPreference("lastHomePageJson")

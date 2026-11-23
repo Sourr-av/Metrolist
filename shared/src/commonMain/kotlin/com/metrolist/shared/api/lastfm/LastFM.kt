@@ -157,6 +157,12 @@ const val LASTFM_PLACEHOLDER_HASH = "2a96cbd8b46e442fc41c2b86b821562f"
 
 fun toFullResolution(url: String): String = url.replace(Regex("i/u/[a-zA-Z0-9]+/"), "i/u/ar0/")
 
+@Serializable
+data class LastFmTag(
+    val name: String,
+    val count: Int = 0,
+)
+
 object LastFM {
     private const val MAX_SCRAPED_HTML_BYTES = 2 * 1_024 * 1_024
     private const val TOP_TITLES_LIMIT = 50
@@ -164,6 +170,7 @@ object LastFM {
     private const val MAX_SCRAPED_MATCHES = 100
     private const val TAG = "LastFM"
     private var apiKey: String = ""
+    private var spacesApiKey: String = ""
     private var secret: String = ""
     var sessionKey: String? = null
 
@@ -182,7 +189,13 @@ object LastFM {
         if (secret.isNotBlank()) this.secret = secret
     }
 
-    fun apiKeyConfigured(): Boolean = apiKey.isNotBlank()
+    fun setSpacesApiKey(apiKey: String) {
+        this.spacesApiKey = apiKey.trim()
+    }
+
+    fun effectiveApiKey(): String = apiKey.ifBlank { spacesApiKey }
+
+    fun apiKeyConfigured(): Boolean = effectiveApiKey().isNotBlank()
 
     suspend fun getUserInfo(
         httpClient: HttpClient,
@@ -1010,4 +1023,97 @@ object LastFM {
                 payload.jsonObject["toptracks"]!!.jsonObject["track"]!!,
             )
         }
+
+    suspend fun getTrackTopTags(
+        httpClient: HttpClient,
+        artist: String,
+        track: String,
+    ): List<LastFmTag>? {
+        val key = effectiveApiKey()
+        if (key.isBlank() || artist.isBlank() || track.isBlank()) return null
+        return fetchTopTags(
+            httpClient = httpClient,
+            method = "track.getTopTags",
+            apiKey = key,
+            params = listOf("artist" to artist, "track" to track),
+        )
+    }
+
+    suspend fun getArtistTopTags(
+        httpClient: HttpClient,
+        artist: String,
+    ): List<LastFmTag>? {
+        val key = effectiveApiKey()
+        if (key.isBlank() || artist.isBlank()) return null
+        return fetchTopTags(
+            httpClient = httpClient,
+            method = "artist.getTopTags",
+            apiKey = key,
+            params = listOf("artist" to artist),
+        )
+    }
+
+    suspend fun getAlbumTopTags(
+        httpClient: HttpClient,
+        artist: String,
+        album: String,
+    ): List<LastFmTag>? {
+        val key = effectiveApiKey()
+        if (key.isBlank() || artist.isBlank() || album.isBlank()) return null
+        return fetchTopTags(
+            httpClient = httpClient,
+            method = "album.getTopTags",
+            apiKey = key,
+            params = listOf("artist" to artist, "album" to album),
+        )
+    }
+
+    private suspend fun fetchTopTags(
+        httpClient: HttpClient,
+        method: String,
+        apiKey: String,
+        params: List<Pair<String, String>>,
+    ): List<LastFmTag>? =
+        try {
+            val response =
+                httpClient.prepareGet("https://ws.audioscrobbler.com/2.0/") {
+                    headers.append(HttpHeaders.Accept, "application/json")
+                    parameter("method", method)
+                    parameter("autocorrect", 1)
+                    params.forEach { (k, v) -> parameter(k, v) }
+                    parameter("api_key", apiKey)
+                    parameter("format", "json")
+                }
+            val limited = response.readTextLimited(MAX_SCRAPED_HTML_BYTES)
+            if (limited.status.value !in 200..299) return null
+            val body = limited.body ?: return null
+            parseTopTagsResponse(body)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+
+    internal fun parseTopTagsResponse(body: String): List<LastFmTag>? {
+        val parsed = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return null
+        val errorCode = parsed["error"]?.jsonPrimitive?.intOrNull
+        if (errorCode != null) {
+            // Error 6 = track/artist/album not found -> valid empty result so callers don't keep retrying.
+            return if (errorCode == 6) emptyList() else null
+        }
+        val tagElement = parsed["toptags"]?.jsonObject?.get("tag") ?: return emptyList()
+        val tagObjects =
+            when (tagElement) {
+                is JsonArray -> tagElement.mapNotNull { it as? JsonObject }
+                is JsonObject -> listOf(tagElement)
+                else -> emptyList()
+            }
+        return tagObjects.mapNotNull { obj ->
+            val name = obj["name"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            if (name.isBlank()) return@mapNotNull null
+            val countPrimitive = obj["count"]?.jsonPrimitive
+            val count = countPrimitive?.intOrNull ?: countPrimitive?.contentOrNull?.toIntOrNull() ?: 1
+            LastFmTag(name = name, count = count.coerceAtLeast(1))
+        }
+    }
 }

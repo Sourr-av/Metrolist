@@ -10,10 +10,33 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
 @Serializable
+data class SpaceFilterSpec(
+    val languages: List<String> = emptyList(),
+    val genres: List<String> = emptyList(),
+) {
+    val isActive: Boolean
+        get() = languages.isNotEmpty() || genres.isNotEmpty()
+
+    fun normalized(): SpaceFilterSpec =
+        SpaceFilterSpec(
+            languages = languages.map { it.trim() }.filter { it.isNotBlank() }.distinctBy { it.lowercase() },
+            genres = genres.map { it.trim() }.filter { it.isNotBlank() }.distinctBy { it.lowercase() },
+        )
+}
+
+@Serializable
 data class HomeSpace(
     val id: String,
     val name: String,
-)
+    val languages: List<String> = emptyList(),
+    val genres: List<String> = emptyList(),
+) {
+    val filterSpec: SpaceFilterSpec
+        get() = SpaceFilterSpec(languages = languages, genres = genres).normalized()
+
+    val hasFilters: Boolean
+        get() = filterSpec.isActive
+}
 
 class HomeSpaceStore(
     private val readSpaces: () -> String,
@@ -30,7 +53,10 @@ class HomeSpaceStore(
         return runCatching { json.decodeFromString<List<HomeSpace>>(raw) }
             .getOrDefault(emptyList())
             .filter { it.id.isNotBlank() && it.name.isNotBlank() }
-            .distinctBy { it.id }
+            .map { space ->
+                val normalized = space.filterSpec
+                space.copy(languages = normalized.languages, genres = normalized.genres)
+            }.distinctBy { it.id }
     }
 
     fun activeId(spaces: List<HomeSpace> = all()): String? {
@@ -55,6 +81,8 @@ class HomeSpaceStore(
     fun create(
         name: String,
         defaultPrefix: String = "Space",
+        languages: List<String> = emptyList(),
+        genres: List<String> = emptyList(),
     ): HomeSpace {
         val current = all()
         val resolvedName = name.trim().ifBlank { nextDefaultName(defaultPrefix, current) }
@@ -66,7 +94,14 @@ class HomeSpaceStore(
             candidateId = "${baseId}_$suffix"
             suffix++
         }
-        val created = HomeSpace(id = candidateId, name = resolvedName)
+        val normalizedFilters = SpaceFilterSpec(languages = languages, genres = genres).normalized()
+        val created =
+            HomeSpace(
+                id = candidateId,
+                name = resolvedName,
+                languages = normalizedFilters.languages,
+                genres = normalizedFilters.genres,
+            )
         save(current + created)
         writeActiveId(created.id)
         return created
@@ -80,6 +115,34 @@ class HomeSpaceStore(
         val current = all()
         if (trimmed.isBlank()) return current
         val updated = current.map { space -> if (space.id == id) space.copy(name = trimmed) else space }
+        if (updated != current) {
+            save(updated)
+        }
+        return updated
+    }
+
+    fun update(
+        id: String,
+        newName: String,
+        languages: List<String>,
+        genres: List<String>,
+    ): List<HomeSpace> {
+        val trimmed = newName.trim()
+        val current = all()
+        if (trimmed.isBlank()) return current
+        val normalizedFilters = SpaceFilterSpec(languages = languages, genres = genres).normalized()
+        val updated =
+            current.map { space ->
+                if (space.id == id) {
+                    space.copy(
+                        name = trimmed,
+                        languages = normalizedFilters.languages,
+                        genres = normalizedFilters.genres,
+                    )
+                } else {
+                    space
+                }
+            }
         if (updated != current) {
             save(updated)
         }
@@ -130,12 +193,21 @@ object HomeSpaces {
     fun create(
         name: String,
         defaultPrefix: String = "Space",
-    ): HomeSpace = store.create(name, defaultPrefix)
+        languages: List<String> = emptyList(),
+        genres: List<String> = emptyList(),
+    ): HomeSpace = store.create(name, defaultPrefix, languages, genres)
 
     fun rename(
         id: String,
         newName: String,
     ): List<HomeSpace> = store.rename(id, newName)
+
+    fun update(
+        id: String,
+        newName: String,
+        languages: List<String>,
+        genres: List<String>,
+    ): List<HomeSpace> = store.update(id, newName, languages, genres)
 
     fun delete(id: String): List<HomeSpace> = store.delete(id)
 

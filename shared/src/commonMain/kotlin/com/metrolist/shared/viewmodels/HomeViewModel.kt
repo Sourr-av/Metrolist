@@ -40,6 +40,12 @@ import com.metrolist.shared.settings.BlockedContent
 import com.metrolist.shared.settings.HiddenHomeItems
 import com.metrolist.shared.settings.HomeContentFilter
 import com.metrolist.shared.settings.Settings
+import com.metrolist.shared.settings.SpaceFilterSpec
+import com.metrolist.shared.spaces.LastFmSpaceTagProvider
+import com.metrolist.shared.spaces.SpaceCandidateSource
+import com.metrolist.shared.spaces.SpaceContentFilter
+import com.metrolist.shared.spaces.SpaceFallbackShelfTitles
+import com.metrolist.shared.spaces.SpaceFeedSupplement
 import com.metrolist.shared.state.GlobalYouTube
 import com.metrolist.shared.state.GlobalYouTubeRepository
 import com.metrolist.shared.ui.components.AUTO_PLAYLIST_ICON_LIKED
@@ -235,8 +241,18 @@ class HomeViewModel(
     private val httpClient: HttpClient = GlobalYouTube.client,
     var likedSongsName: String,
     private val persistLastHomePage: Boolean = true,
+    initialSpaceFilter: SpaceFilterSpec? = null,
+    private val spaceShelfTitles: SpaceFallbackShelfTitles = SpaceFallbackShelfTitles(),
 ) {
     val shelfCache = HomeShelfCache()
+
+    @Volatile
+    private var activeSpaceFilter: SpaceFilterSpec? = initialSpaceFilter?.normalized()?.takeIf { it.isActive }
+
+    private val spaceContentFilter = SpaceContentFilter(LastFmSpaceTagProvider(httpClient))
+
+    val hasActiveSpaceFilter: Boolean
+        get() = activeSpaceFilter?.isActive == true
 
     private val _uiState =
         MutableStateFlow(
@@ -430,7 +446,7 @@ class HomeViewModel(
                     )
                     _uiState.update { state ->
                         val withPins =
-                            if (shouldApplyGlobalSpeedDialPins(state.selectedChip)) {
+                            if (shouldApplyGlobalSpeedDialPins(state.selectedChip) && !hasActiveSpaceFilter) {
                                 state.withSpeedDialPins(pinned, speedDialRecommendationItems).withoutBlockedContent()
                             } else {
                                 state
@@ -440,18 +456,20 @@ class HomeViewModel(
                     if (initialSpeedDialPins.complete(Unit)) {
                         Logger.d(HOME_LOG_TAG, "startup cache ready elapsedMs=${cacheStart.elapsedNow().inWholeMilliseconds}")
                     }
-                    cachedAllContent =
-                        cachedAllContent?.let { cached ->
-                            cached.withSpeedDialPins(pinned, cached.speedDialUnpinnedItems())
+                    if (!hasActiveSpaceFilter) {
+                        cachedAllContent =
+                            cachedAllContent?.let { cached ->
+                                cached.withSpeedDialPins(pinned, cached.speedDialUnpinnedItems())
+                            }
+                        publishedPrimaryAllContent.update { primary ->
+                            primary?.let { (generation, state) ->
+                                generation to state.withSpeedDialPins(pinned, state.speedDialUnpinnedItems())
+                            }
                         }
-                    publishedPrimaryAllContent.update { primary ->
-                        primary?.let { (generation, state) ->
-                            generation to state.withSpeedDialPins(pinned, state.speedDialUnpinnedItems())
-                        }
-                    }
-                    publishedPrimaryChipContent.update { primary ->
-                        primary?.let { (generation, state) ->
-                            generation to state.withSpeedDialPins(pinned, state.speedDialUnpinnedItems())
+                        publishedPrimaryChipContent.update { primary ->
+                            primary?.let { (generation, state) ->
+                                generation to state.withSpeedDialPins(pinned, state.speedDialUnpinnedItems())
+                            }
                         }
                     }
                 }
@@ -467,6 +485,7 @@ class HomeViewModel(
                     database.dao().allPlaylists(),
                     snapshotFlow { Settings.shared.lastLibraryRefreshAccount },
                 ) { _, _ -> Unit }.collectLatest {
+                    if (hasActiveSpaceFilter) return@collectLatest
                     val revision = ++librarySnapshotRevision
                     val snapshot = fetchUserPlaylists()
                     if (!isCurrentHomeLibraryRevision(snapshot.revision, librarySnapshotRevision) || snapshot.revision != revision) {
@@ -732,6 +751,7 @@ class HomeViewModel(
                 var primaryContentSnapshot: HomeUiState? = null
                 var loadedPrimaryPage: HomePageData? = primaryPageOverride
                 var completionTransferred = false
+                val spaceFilter = activeSpaceFilter
                 supervisorScope {
                     try {
                         val homePageDataDeferred =
@@ -743,7 +763,7 @@ class HomeViewModel(
                             }
                         val authenticatedSpeedDialSectionsDeferred =
                             async {
-                                if (isFiltered) {
+                                if (isFiltered || spaceFilter != null) {
                                     Result.success(emptyList<HomeSection>())
                                 } else {
                                     homeRequestResult("authenticated speed dial") { authenticatedSpeedDialSections(params, browseId) }
@@ -753,7 +773,7 @@ class HomeViewModel(
                         val exploreSectionsDeferred =
                             async {
                                 homeRequestResult("explore") {
-                                    if (!isFiltered && !signedIn) {
+                                    if ((!isFiltered && !signedIn) || spaceFilter != null) {
                                         GlobalYouTubeRepository.instance
                                             .getHomePageData(browseId = "FEmusic_explore")
                                             .sections
@@ -762,13 +782,21 @@ class HomeViewModel(
                                     }
                                 }
                             }
-                        val quickPicksDeferred = async { if (isFiltered) emptyList() else database.dao().quickPicks().first() }
+                        val quickPicksDeferred =
+                            async { if (isFiltered || spaceFilter != null) emptyList() else database.dao().quickPicks().first() }
                         val forgottenFavoritesDeferred =
-                            async { if (isFiltered) emptyList() else database.dao().forgottenFavorites().first() }
-                        val userPlaylistsDeferred = async { fetchUserPlaylists() }
+                            async { if (isFiltered || spaceFilter != null) emptyList() else database.dao().forgottenFavorites().first() }
+                        val userPlaylistsDeferred =
+                            async {
+                                if (spaceFilter != null) {
+                                    HomeUserPlaylistSnapshot(librarySnapshotRevision, emptyList())
+                                } else {
+                                    fetchUserPlaylists()
+                                }
+                            }
                         val keepListeningDeferred =
                             async {
-                                if (isFiltered) {
+                                if (isFiltered || spaceFilter != null) {
                                     emptyList()
                                 } else {
                                     database
@@ -796,6 +824,98 @@ class HomeViewModel(
                         }
                         val hydratedPrimarySections =
                             rawHomeSections.withLocalSongMetadata(primaryLocalSongMetadata).withoutNonMusicalVideos()
+                        if (spaceFilter != null) {
+                            val exploreSections = exploreSectionsDeferred.await().getOrDefault(emptyList())
+                            val exploreMetadata = loadLocalSongMetadata(exploreSections)
+                            if (generation != contentLoadGeneration ||
+                                sessionKey != GlobalYouTube.innerTube.sessionSnapshot().homeCacheSessionKey()
+                            ) {
+                                return@supervisorScope
+                            }
+                            val hydratedExploreSections =
+                                exploreSections.withLocalSongMetadata(exploreMetadata).withoutNonMusicalVideos()
+                            val filteredFeed =
+                                SpaceFeedSupplement.buildFilteredFeed(
+                                    rawHomeSections = hydratedPrimarySections,
+                                    homeChips = homePageData.chips,
+                                    exploreSections = hydratedExploreSections,
+                                    filter = spaceFilter,
+                                    contentFilter = spaceContentFilter,
+                                    shelfTitles = spaceShelfTitles,
+                                    signedIn = signedIn,
+                                )
+                            if (generation != contentLoadGeneration ||
+                                sessionKey != GlobalYouTube.innerTube.sessionSnapshot().homeCacheSessionKey()
+                            ) {
+                                return@supervisorScope
+                            }
+                            val filteredSections = filteredFeed.sections
+                            val filteredQuickPicks =
+                                findSectionSongs(filteredSections, "FEmusic_quickpicks").distinctBy(::canonicalHomeItemId)
+                            val filteredKeepListening =
+                                findSectionSongs(filteredSections, "FEmusic_listen_again").distinctBy(::canonicalHomeItemId)
+                            val filteredForgottenFavorites =
+                                findSectionSongs(filteredSections, "FEmusic_forgotten_favorites").distinctBy(::canonicalHomeItemId)
+                            val filteredSpeedDial =
+                                speedDialRecommendations(
+                                    quickPicks = filteredQuickPicks.ifEmpty { filteredFeed.fallbackSongs },
+                                    otherShelves =
+                                        filteredSections
+                                            .filterNot { it.browseId?.startsWith("FEmusic_quickpicks") == true }
+                                            .map { it.items },
+                                    localFallback = emptyList(),
+                                    excludedPlaylistIds = emptySet(),
+                                ).distinctBy(::canonicalHomeItemId)
+                            val filteredLoadedState =
+                                _uiState.value.copy(
+                                    contentLocaleSignature = currentContentLocaleSignature(),
+                                    sessionKey = sessionKey,
+                                    data = filteredSections,
+                                    discoverySections = emptyList(),
+                                    isLoading = false,
+                                    isRefreshing = false,
+                                    isRevalidating = false,
+                                    isContentLoading = false,
+                                    isAllContentPending = false,
+                                    isLoadingMore = false,
+                                    chips = emptyList(),
+                                    selectedChip = null,
+                                    continuation = homePageData.continuation,
+                                    trending =
+                                        findSectionsByBrowseId(filteredSections, "FEmusic_charts")
+                                            .flatMap { it.items.filterIsInstance<SongItem>() }
+                                            .distinctBy(::canonicalHomeItemId),
+                                    albumCharts =
+                                        findSectionsByBrowseId(filteredSections, "FEmusic_charts")
+                                            .flatMap { it.items.filterIsInstance<AlbumItem>() }
+                                            .distinctBy(::canonicalHomeItemId),
+                                    quickPicks = filteredQuickPicks,
+                                    newReleases = newReleasesFrom(filteredSections).distinctBy(::canonicalHomeItemId),
+                                    keepListening = filteredKeepListening,
+                                    forgottenFavorites = filteredForgottenFavorites,
+                                    speedDialItems = filteredSpeedDial,
+                                    speedDialPinnedIds = emptyList(),
+                                    communityPlaylist =
+                                        findSectionsByBrowseId(filteredSections, "FEmusic_community")
+                                            .flatMap { it.items.filterIsInstance<PlaylistItem>() }
+                                            .distinctBy(::canonicalHomeItemId),
+                                    moodsAndGenres = emptyList(),
+                                    podcasts = emptyList(),
+                                    similarRecommendations = findSimilarRecommendations(filteredSections),
+                                    recapPlaylists = emptyList(),
+                                    userPlaylists = emptyList(),
+                                    sections = uncategorizedHomeSections(filteredSections),
+                                    recentlyPlayed = emptyList(),
+                                )
+                            allContentReloadRequired = false
+                            cacheAllContentState(filteredLoadedState)
+                            publishedPrimaryAllContent.value = null
+                            publishedPrimaryChipContent.value = null
+                            primaryContentSnapshot = filteredLoadedState
+                            primaryContentPublished = true
+                            _uiState.value = filteredLoadedState.withoutBlockedContent()
+                            return@supervisorScope
+                        }
                         var userPlaylistsSnapshot = userPlaylistsDeferred.await()
                         if (!isCurrentHomeLibraryRevision(userPlaylistsSnapshot.revision, librarySnapshotRevision)) {
                             userPlaylistsSnapshot = fetchUserPlaylists()
@@ -1166,9 +1286,10 @@ class HomeViewModel(
     fun loadMoreSections() {
         val continuation = _uiState.value.continuation
         if (!paginationInProgress.compareAndSet(false, true)) return
+        val spaceFilter = activeSpaceFilter
         if (continuation == null) {
             val state = _uiState.value
-            if (shouldLoadMoreHomeContent(state)) {
+            if (spaceFilter == null && shouldLoadMoreHomeContent(state)) {
                 loadMoreChipSections()
             } else {
                 paginationInProgress.value = false
@@ -1185,7 +1306,19 @@ class HomeViewModel(
                     if (generation != contentLoadGeneration || _uiState.value.continuation != continuation) return@launch
                     val pageMetadata = loadLocalSongMetadata(newSections)
                     if (generation != contentLoadGeneration || _uiState.value.continuation != continuation) return@launch
-                    val hydratedNewSections = newSections.withLocalSongMetadata(pageMetadata)
+                    val rawHydratedSections = newSections.withLocalSongMetadata(pageMetadata)
+                    val hydratedNewSections =
+                        if (spaceFilter != null) {
+                            spaceContentFilter.filterSections(
+                                sections = rawHydratedSections.withoutNonMusicalVideos(),
+                                filter = spaceFilter,
+                                source = SpaceCandidateSource.HOME_FEED,
+                                maxCandidates = 50,
+                            )
+                        } else {
+                            rawHydratedSections
+                        }
+                    if (generation != contentLoadGeneration || _uiState.value.continuation != continuation) return@launch
                     if (isFilteredHome(_uiState.value.selectedChip?.params, _uiState.value.selectedChip?.browseId ?: "FEmusic_home")) {
                         val currentState = _uiState.value
                         val merged =
@@ -1201,7 +1334,7 @@ class HomeViewModel(
                         val merged = (cachedAllContent ?: _uiState.value).withMergedSections(hydratedNewSections, nextContinuation)
                         cacheAllContentState(merged)
                         _uiState.value = merged.withoutBlockedContent().copy(isLoadingMore = true)
-                        appendMissingMainFeedMoods(generation)
+                        if (spaceFilter == null) appendMissingMainFeedMoods(generation)
                     }
                 } catch (error: CancellationException) {
                     throw error
@@ -1254,6 +1387,7 @@ class HomeViewModel(
             .withoutNonMusicalVideos()
 
     private fun preloadMoreSections() {
+        if (hasActiveSpaceFilter) return
         val selectedChip = _uiState.value.selectedChip
         if (isFilteredHome(selectedChip?.params, selectedChip?.browseId ?: "FEmusic_home")) return
         if (!paginationInProgress.compareAndSet(false, true)) return
@@ -1318,6 +1452,7 @@ class HomeViewModel(
     }
 
     private suspend fun rebuildQuickPicks() {
+        if (hasActiveSpaceFilter) return
         val state = _uiState.value
         if (state.isLoading || state.isRefreshing || state.isRevalidating ||
             state.isContentLoading || state.isLoadingMore
@@ -1560,6 +1695,22 @@ class HomeViewModel(
     }
 
     private fun String.canonicalPlaylistId(): String = removePrefix("VL")
+
+    fun updateSpaceFilter(filter: SpaceFilterSpec?) {
+        val normalized = filter?.normalized()?.takeIf { it.isActive }
+        if (normalized == activeSpaceFilter) return
+        activeSpaceFilter = normalized
+        chipContentCache = emptyMap()
+        cachedAllContent = null
+        cachedSelectedChipContent = null
+        _uiState.value =
+            HomeUiState(
+                isLoading = true,
+                isRestoringCache = false,
+                speedDialSurprisePinned = Settings.shared.speedDialSurprisePinned,
+            )
+        loadHomeData(params = null, browseId = "FEmusic_home", isRefresh = true)
+    }
 
     fun refresh(onComplete: () -> Unit) {
         chipContentCache = emptyMap()
