@@ -19,6 +19,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.Parameters
 import io.ktor.http.decodeURLQueryComponent
 import io.ktor.http.encodeURLParameter
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.io.IOException
@@ -163,6 +164,12 @@ data class LastFmTag(
     val count: Int = 0,
 )
 
+@Serializable
+data class LastFmArtistProfile(
+    val tags: List<LastFmTag> = emptyList(),
+    val bioSummary: String = "",
+)
+
 object LastFM {
     private const val MAX_SCRAPED_HTML_BYTES = 2 * 1_024 * 1_024
     private const val TOP_TITLES_LIMIT = 50
@@ -173,6 +180,12 @@ object LastFM {
     private var spacesApiKey: String = ""
     private var secret: String = ""
     var sessionKey: String? = null
+
+    @Volatile
+    var lastApiKeyError: String? = null
+        private set
+
+    private val HTML_TAG_REGEX = Regex("<[^>]+>")
 
     private val json =
         Json {
@@ -185,17 +198,23 @@ object LastFM {
         apiKey: String,
         secret: String,
     ) {
-        if (apiKey.isNotBlank()) this.apiKey = apiKey
+        if (apiKey.isNotBlank()) {
+            this.apiKey = apiKey.trim()
+            this.lastApiKeyError = null
+        }
         if (secret.isNotBlank()) this.secret = secret
     }
 
     fun setSpacesApiKey(apiKey: String) {
         this.spacesApiKey = apiKey.trim()
+        this.lastApiKeyError = null
     }
 
-    fun effectiveApiKey(): String = apiKey.ifBlank { spacesApiKey }
+    fun effectiveApiKey(): String = spacesApiKey.ifBlank { apiKey }
 
     fun apiKeyConfigured(): Boolean = effectiveApiKey().isNotBlank()
+
+    fun hasInvalidApiKey(): Boolean = lastApiKeyError != null
 
     suspend fun getUserInfo(
         httpClient: HttpClient,
@@ -1024,13 +1043,41 @@ object LastFM {
             )
         }
 
+    suspend fun getArtistProfile(
+        httpClient: HttpClient,
+        artist: String,
+    ): LastFmArtistProfile? {
+        val key = effectiveApiKey()
+        if (key.isBlank() || hasInvalidApiKey() || artist.isBlank()) return null
+        return try {
+            val response =
+                httpClient.prepareGet("https://ws.audioscrobbler.com/2.0/") {
+                    headers.append(HttpHeaders.Accept, "application/json")
+                    parameter("method", "artist.getInfo")
+                    parameter("autocorrect", 1)
+                    parameter("artist", artist)
+                    parameter("lang", "en")
+                    parameter("api_key", key)
+                    parameter("format", "json")
+                }
+            val limited = response.readTextLimited(MAX_SCRAPED_HTML_BYTES)
+            if (limited.status.value !in 200..299) return null
+            val body = limited.body ?: return null
+            parseArtistProfileResponse(body)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     suspend fun getTrackTopTags(
         httpClient: HttpClient,
         artist: String,
         track: String,
     ): List<LastFmTag>? {
         val key = effectiveApiKey()
-        if (key.isBlank() || artist.isBlank() || track.isBlank()) return null
+        if (key.isBlank() || hasInvalidApiKey() || artist.isBlank() || track.isBlank()) return null
         return fetchTopTags(
             httpClient = httpClient,
             method = "track.getTopTags",
@@ -1044,7 +1091,7 @@ object LastFM {
         artist: String,
     ): List<LastFmTag>? {
         val key = effectiveApiKey()
-        if (key.isBlank() || artist.isBlank()) return null
+        if (key.isBlank() || hasInvalidApiKey() || artist.isBlank()) return null
         return fetchTopTags(
             httpClient = httpClient,
             method = "artist.getTopTags",
@@ -1059,7 +1106,7 @@ object LastFM {
         album: String,
     ): List<LastFmTag>? {
         val key = effectiveApiKey()
-        if (key.isBlank() || artist.isBlank() || album.isBlank()) return null
+        if (key.isBlank() || hasInvalidApiKey() || artist.isBlank() || album.isBlank()) return null
         return fetchTopTags(
             httpClient = httpClient,
             method = "album.getTopTags",
@@ -1098,6 +1145,9 @@ object LastFM {
         val parsed = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return null
         val errorCode = parsed["error"]?.jsonPrimitive?.intOrNull
         if (errorCode != null) {
+            if (errorCode == 10 || errorCode == 26) {
+                lastApiKeyError = parsed["message"]?.jsonPrimitive?.contentOrNull ?: "Invalid Last.fm API key"
+            }
             // Error 6 = track/artist/album not found -> valid empty result so callers don't keep retrying.
             return if (errorCode == 6) emptyList() else null
         }
@@ -1115,5 +1165,46 @@ object LastFM {
             val count = countPrimitive?.intOrNull ?: countPrimitive?.contentOrNull?.toIntOrNull() ?: 1
             LastFmTag(name = name, count = count.coerceAtLeast(1))
         }
+    }
+
+    internal fun parseArtistProfileResponse(body: String): LastFmArtistProfile? {
+        val parsed = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return null
+        val errorCode = parsed["error"]?.jsonPrimitive?.intOrNull
+        if (errorCode != null) {
+            if (errorCode == 10 || errorCode == 26) {
+                lastApiKeyError = parsed["message"]?.jsonPrimitive?.contentOrNull ?: "Invalid Last.fm API key"
+            }
+            return if (errorCode == 6) LastFmArtistProfile() else null
+        }
+        val artistObj = parsed["artist"]?.jsonObject ?: return LastFmArtistProfile()
+        val tagElement = artistObj["tags"]?.jsonObject?.get("tag")
+        val tagObjects =
+            when (tagElement) {
+                is JsonArray -> tagElement.mapNotNull { it as? JsonObject }
+                is JsonObject -> listOf(tagElement)
+                else -> emptyList()
+            }
+        val tags =
+            tagObjects.mapIndexedNotNull { index, obj ->
+                val name = obj["name"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+                if (name.isBlank()) return@mapIndexedNotNull null
+                // artist.getInfo returns the artist's top 5 most-weighted tags in descending order without explicit counts.
+                val inferredCount = (100 - index * 12).coerceAtLeast(45)
+                LastFmTag(name = name, count = inferredCount)
+            }
+        val rawBio =
+            artistObj["bio"]
+                ?.jsonObject
+                ?.get("summary")
+                ?.jsonPrimitive
+                ?.contentOrNull
+                .orEmpty()
+        val cleanBio =
+            rawBio
+                .replace(HTML_TAG_REGEX, " ")
+                .substringBefore("Read more on Last.fm")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+        return LastFmArtistProfile(tags = tags, bioSummary = cleanBio)
     }
 }

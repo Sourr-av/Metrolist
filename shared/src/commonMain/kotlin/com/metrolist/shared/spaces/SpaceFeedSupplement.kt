@@ -23,6 +23,7 @@ import com.metrolist.shared.state.GlobalYouTubeRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.supervisorScope
+import kotlin.random.Random
 
 data class SpaceFallbackShelfTitles(
     val songs: String = "Recommended songs",
@@ -34,42 +35,67 @@ data class SpaceFallbackShelfTitles(
 data class SpaceFilteredFeedResult(
     val sections: List<HomeSection>,
     val fallbackSongs: List<SongItem> = emptyList(),
+    val quickPicks: List<SongItem> = emptyList(),
+    val keepListening: List<SongItem> = emptyList(),
+    val forgottenFavorites: List<SongItem> = emptyList(),
+    val nextContinuation: String? = null,
 )
 
 object SpaceFeedSupplement {
-    private const val MIN_VERIFIED_ITEMS_AFTER_HOME = 14
-    private const val MIN_VERIFIED_ITEMS_AFTER_CHIPS = 16
+    // Target personalized items to harvest from the user's own Home + continuations + local history before stopping Stage 1.
+    private const val PERSONALIZED_TARGET_ITEMS = 18
+
+    // Only invoke personalized chip / radio expansion if the user's own Home + history yielded fewer than this.
+    private const val MIN_PERSONALIZED_BEFORE_CHIP_OR_RADIO = 10
+
+    // Only invoke cold Moods & Genres / YouTube Search fallback if ALL personalized sources yielded fewer than this.
+    private const val MIN_PERSONALIZED_BEFORE_COLD_FALLBACK = 8
 
     /**
-     * Multi-stage strict filtering + smart sourcing pipeline for a filtered Space:
-     * 1. Screen the normal Home feed strictly via Last.fm tags + script/language detection.
-     * 2. If too few items pass, check YouTube's closest Home chip (e.g. Pop, Relax, Energize)
-     *    and YouTube Music's Moods & Genres browse page for matching genre(s), screening strictly.
-     * 3. If still too few items pass, query YouTube Music search (without recording search history)
-     *    for the Space's language + genre, strictly rejecting any language/genre conflict while
-     *    allowing untagged tracks returned by the targeted search.
+     * Personalized-first, strict filtering + smart sourcing pipeline for a filtered Space:
+     * 1. Screen the user's OWN personalized Home Page 1 + Home continuation pages (up to 2-3 pages)
+     *    + the user's local listening history (Quick Picks, Listen Again, Forgotten Favorites) strictly.
+     *    If the user already listens to this Space's language/genre, STOP here — no cold fallback!
+     * 2. If personalized Home + history are sparse (< 10 items):
+     *    2a. Check YouTube's closest personalized Home chip (e.g. Hip-hop, Pop, Rock, Energize).
+     *    2b. If we have at least 1 verified matched song, expand via YouTube Radio (`startRadio`)
+     *        seeded from a matched song rotated by [refreshSeed] so refreshes feel fresh & personalized.
+     *    2c. If still < 8 items, check YouTube Music's Moods & Genres browse page lazily.
+     * 3. Only if ALL above still yield < 8 items, query targeted YouTube Music Search (without recording
+     *    search history), rotating queries by [refreshSeed] and aggressively rejecting any language/genre conflict.
      */
     suspend fun buildFilteredFeed(
         rawHomeSections: List<HomeSection>,
         homeChips: List<Chip>,
-        exploreSections: List<HomeSection>,
+        exploreSections: List<HomeSection> = emptyList(),
         filter: SpaceFilterSpec,
         contentFilter: SpaceContentFilter,
         shelfTitles: SpaceFallbackShelfTitles = SpaceFallbackShelfTitles(),
         signedIn: Boolean = false,
+        initialContinuation: String? = null,
+        localQuickPicks: List<SongItem> = emptyList(),
+        localKeepListening: List<SongItem> = emptyList(),
+        localForgottenFavorites: List<SongItem> = emptyList(),
+        refreshSeed: Int = 0,
+        previousItemIds: Set<String> = emptySet(),
     ): SpaceFilteredFeedResult {
         val normalized = filter.normalized()
-        if (!normalized.isActive) return SpaceFilteredFeedResult(sections = rawHomeSections)
+        if (!normalized.isActive) {
+            return SpaceFilteredFeedResult(
+                sections = rawHomeSections,
+                nextContinuation = initialContinuation,
+            )
+        }
 
         val collectedSections = mutableListOf<HomeSection>()
         val seenIds = mutableSetOf<String>()
+        var currentContinuation = initialContinuation
 
         fun addVerifiedSections(sections: List<HomeSection>) {
             for (section in sections) {
                 val uniqueItems =
                     section.items.filter { item ->
-                        val key = canonicalHomeItemId(item)
-                        seenIds.add(key)
+                        seenIds.add(canonicalHomeItemId(item))
                     }
                 if (uniqueItems.isNotEmpty()) {
                     collectedSections += section.copy(items = uniqueItems)
@@ -77,20 +103,112 @@ object SpaceFeedSupplement {
             }
         }
 
-        // --- Stage 1: Screen normal Home feed (strict HOME_FEED mode) ---
+        // --- Stage 1a: Screen User's Personalized Home Page 1 + Local Listening History in parallel ---
         val homeCandidates = prepareCandidateSections(rawHomeSections)
-        addVerifiedSections(
-            contentFilter.filterSections(
-                sections = homeCandidates,
-                filter = normalized,
-                source = SpaceCandidateSource.HOME_FEED,
-                maxCandidates = 85,
-            ),
-        )
+        val cleanLocalQuickPicks =
+            localQuickPicks
+                .filterNot { it.isPodcast || it.isNonMusicalVideo }
+                .distinctBy(::canonicalHomeItemId)
+        val cleanLocalKeepListening =
+            localKeepListening
+                .filterNot { it.isPodcast || it.isNonMusicalVideo }
+                .distinctBy(::canonicalHomeItemId)
+        val cleanLocalForgotten =
+            localForgottenFavorites
+                .filterNot { it.isPodcast || it.isNonMusicalVideo }
+                .distinctBy(::canonicalHomeItemId)
 
-        // --- Stage 2a: Closest YouTube Home chip (e.g. Hip-hop, Pop, Relax, Energize) ---
-        if (seenIds.size < MIN_VERIFIED_ITEMS_AFTER_HOME && normalized.genres.isNotEmpty()) {
-            val matchingChip = SpaceFilterTaxonomy.findMatchingChips(homeChips, normalized.genres).firstOrNull()
+        val verifiedLocalMap: Map<String, SongItem>
+        val page1Verified: List<HomeSection>
+        supervisorScope {
+            val page1Deferred =
+                async {
+                    contentFilter.filterSections(
+                        sections = homeCandidates,
+                        filter = normalized,
+                        source = SpaceCandidateSource.HOME_FEED,
+                        maxCandidates = 80,
+                    )
+                }
+            val localUnion =
+                (cleanLocalQuickPicks + cleanLocalKeepListening + cleanLocalForgotten)
+                    .distinctBy(::canonicalHomeItemId)
+            val localDeferred =
+                async {
+                    if (localUnion.isEmpty()) {
+                        emptyList()
+                    } else {
+                        contentFilter
+                            .filterItems(
+                                items = localUnion,
+                                filter = normalized,
+                                source = SpaceCandidateSource.HOME_FEED,
+                                maxCandidates = 45,
+                            ).filterIsInstance<SongItem>()
+                    }
+                }
+            page1Verified = page1Deferred.await()
+            verifiedLocalMap = localDeferred.await().associateBy(::canonicalHomeItemId)
+        }
+
+        addVerifiedSections(page1Verified)
+
+        val verifiedLocalQuickPicks =
+            cleanLocalQuickPicks.mapNotNull { verifiedLocalMap[canonicalHomeItemId(it)] }
+        val verifiedLocalKeepListening =
+            cleanLocalKeepListening.mapNotNull { verifiedLocalMap[canonicalHomeItemId(it)] }
+        val verifiedLocalForgotten =
+            cleanLocalForgotten.mapNotNull { verifiedLocalMap[canonicalHomeItemId(it)] }
+
+        // Count verified local songs toward personalized pool so we don't prematurely trigger cold search!
+        val allPersonalizedLocalIds =
+            (verifiedLocalQuickPicks + verifiedLocalKeepListening + verifiedLocalForgotten)
+                .mapTo(mutableSetOf(), ::canonicalHomeItemId)
+        val personalizedCount = { (seenIds + allPersonalizedLocalIds).size }
+
+        // --- Stage 1b: Fetch up to 2 personalized Home continuation pages (3 on refresh if mostly seen) ---
+        val maxContinuationPages = if (refreshSeed > 0) 3 else 2
+        var fetchedContinuationPages = 0
+        while (currentContinuation != null && fetchedContinuationPages < maxContinuationPages) {
+            val unseenCount = (seenIds + allPersonalizedLocalIds).count { it !in previousItemIds }
+            val hasEnough =
+                personalizedCount() >= PERSONALIZED_TARGET_ITEMS &&
+                    (previousItemIds.isEmpty() || unseenCount >= 6)
+            if (hasEnough) break
+
+            val token = currentContinuation
+            val nextPage =
+                safeRequest {
+                    GlobalYouTubeRepository.instance.getHomeSectionsContinuation(
+                        token = token,
+                        isPersonal = signedIn,
+                        loadAllPages = false,
+                    )
+                } ?: break
+            fetchedContinuationPages++
+            currentContinuation = nextPage.second
+            val nextCandidates = prepareCandidateSections(nextPage.first)
+            if (nextCandidates.isNotEmpty()) {
+                addVerifiedSections(
+                    contentFilter.filterSections(
+                        sections = nextCandidates,
+                        filter = normalized,
+                        source = SpaceCandidateSource.HOME_FEED,
+                        maxCandidates = 55,
+                    ),
+                )
+            }
+        }
+
+        // --- Stage 2a: Closest personalized YouTube Home chip (only if user's Home + history < 10 matches) ---
+        if (personalizedCount() < MIN_PERSONALIZED_BEFORE_CHIP_OR_RADIO && normalized.genres.isNotEmpty()) {
+            val matchingChips = SpaceFilterTaxonomy.findMatchingChips(homeChips, normalized.genres)
+            val matchingChip =
+                if (matchingChips.isNotEmpty()) {
+                    matchingChips[((refreshSeed % matchingChips.size) + matchingChips.size) % matchingChips.size]
+                } else {
+                    null
+                }
             if (matchingChip != null) {
                 val chipPage =
                     safeRequest {
@@ -106,15 +224,58 @@ object SpaceFeedSupplement {
                             sections = chipCandidates,
                             filter = normalized,
                             source = SpaceCandidateSource.HOME_FEED,
-                            maxCandidates = 50,
+                            maxCandidates = 45,
                         ),
                     )
                 }
             }
         }
 
-        // --- Stage 2b: YouTube Music Moods & Genres browse page matching requested genre(s) ---
-        if (seenIds.size < MIN_VERIFIED_ITEMS_AFTER_HOME && normalized.genres.isNotEmpty()) {
+        // --- Stage 2b: Personalized Radio expansion from user's OWN verified matched songs ---
+        val matchedPersonalizedSongs =
+            (
+                collectedSections.flatMap { it.items.filterIsInstance<SongItem>() } +
+                    verifiedLocalQuickPicks +
+                    verifiedLocalKeepListening +
+                    verifiedLocalForgotten
+            ).distinctBy(::canonicalHomeItemId)
+
+        val fallbackSongs = mutableListOf<SongItem>()
+        if (personalizedCount() < MIN_PERSONALIZED_BEFORE_CHIP_OR_RADIO && matchedPersonalizedSongs.isNotEmpty()) {
+            val seedIndex = ((refreshSeed % matchedPersonalizedSongs.size) + matchedPersonalizedSongs.size) % matchedPersonalizedSongs.size
+            val seedSong = matchedPersonalizedSongs[seedIndex]
+            val radioSongs =
+                safeRequest {
+                    GlobalYouTubeRepository.instance.startRadio(seedSong.id)
+                }.orEmpty()
+                    .filterNot { it.isPodcast || it.isNonMusicalVideo }
+                    .distinctBy(::canonicalHomeItemId)
+                    .filterNot { canonicalHomeItemId(it) in seenIds }
+            if (radioSongs.isNotEmpty()) {
+                val verifiedRadio =
+                    contentFilter
+                        .filterItems(
+                            items = radioSongs,
+                            filter = normalized,
+                            source = SpaceCandidateSource.HOME_FEED,
+                            maxCandidates = 25,
+                        ).filterIsInstance<SongItem>()
+                        .filter { seenIds.add(canonicalHomeItemId(it)) }
+                if (verifiedRadio.isNotEmpty()) {
+                    fallbackSongs += verifiedRadio
+                    collectedSections +=
+                        HomeSection(
+                            title = shelfTitles.songs,
+                            items = verifiedRadio,
+                            isListStyle = true,
+                            numItemsPerColumn = 4,
+                        )
+                }
+            }
+        }
+
+        // --- Stage 2c: Moods & Genres browse page (lazy — only if STILL < 8 matches) ---
+        if (personalizedCount() < MIN_PERSONALIZED_BEFORE_COLD_FALLBACK && normalized.genres.isNotEmpty()) {
             val moodBrowseItems =
                 (rawHomeSections + exploreSections)
                     .flatMap { it.items }
@@ -128,7 +289,13 @@ object SpaceFeedSupplement {
                                 .filterIsInstance<BrowseItem>()
                         }.orEmpty()
                     }
-            val matchingMood = SpaceFilterTaxonomy.findMatchingMoodItems(moodBrowseItems, normalized.genres).firstOrNull()
+            val matchingMoods = SpaceFilterTaxonomy.findMatchingMoodItems(moodBrowseItems, normalized.genres)
+            val matchingMood =
+                if (matchingMoods.isNotEmpty()) {
+                    matchingMoods[((refreshSeed % matchingMoods.size) + matchingMoods.size) % matchingMoods.size]
+                } else {
+                    null
+                }
             if (matchingMood != null) {
                 val moodPage =
                     safeRequest {
@@ -145,39 +312,16 @@ object SpaceFeedSupplement {
                             sections = moodCandidates,
                             filter = normalized,
                             source = SpaceCandidateSource.HOME_FEED,
-                            maxCandidates = 55,
+                            maxCandidates = 45,
                         ),
                     )
                 }
             }
         }
 
-        // --- Stage 2c: Unpersonalized (signed-out) Home page pass if signed in and still sparse ---
-        if (seenIds.size < MIN_VERIFIED_ITEMS_AFTER_HOME && signedIn) {
-            val anonPage =
-                safeRequest {
-                    GlobalYouTubeRepository.instance.getHomePageData(
-                        browseId = "FEmusic_home",
-                        setLogin = false,
-                    )
-                }
-            if (anonPage != null) {
-                val anonCandidates = prepareCandidateSections(anonPage.sections)
-                addVerifiedSections(
-                    contentFilter.filterSections(
-                        sections = anonCandidates,
-                        filter = normalized,
-                        source = SpaceCandidateSource.HOME_FEED,
-                        maxCandidates = 45,
-                    ),
-                )
-            }
-        }
-
-        // --- Stage 3: Targeted YouTube Music Search fallback (strict conflict rejection, trust untagged) ---
-        val fallbackSongs = mutableListOf<SongItem>()
-        if (seenIds.size < MIN_VERIFIED_ITEMS_AFTER_CHIPS) {
-            val queries = SpaceFilterTaxonomy.buildFallbackSearchQueries(normalized)
+        // --- Stage 3: Targeted YouTube Music Search fallback (ONLY if personalized + radio + moods < 8 matches) ---
+        if (personalizedCount() < MIN_PERSONALIZED_BEFORE_COLD_FALLBACK) {
+            val queries = SpaceFilterTaxonomy.buildFallbackSearchQueries(normalized, rotationSeed = refreshSeed)
             if (queries.isNotEmpty()) {
                 val primaryQuery = queries.first()
                 val secondaryQuery = queries.getOrNull(1)
@@ -223,19 +367,19 @@ object SpaceFeedSupplement {
                     val verifiedSongsDeferred =
                         async {
                             contentFilter
-                                .filterItems(rawSongs, normalized, SpaceCandidateSource.TARGETED_SEARCH, maxCandidates = 30)
+                                .filterItems(rawSongs, normalized, SpaceCandidateSource.TARGETED_SEARCH, maxCandidates = 26)
                                 .filterIsInstance<SongItem>()
                         }
                     val verifiedAlbumsDeferred =
                         async {
                             contentFilter
-                                .filterItems(rawAlbums, normalized, SpaceCandidateSource.TARGETED_SEARCH, maxCandidates = 14)
+                                .filterItems(rawAlbums, normalized, SpaceCandidateSource.TARGETED_SEARCH, maxCandidates = 12)
                                 .filterIsInstance<AlbumItem>()
                         }
                     val verifiedPlaylistsDeferred =
                         async {
                             contentFilter
-                                .filterItems(rawPlaylists, normalized, SpaceCandidateSource.TARGETED_SEARCH, maxCandidates = 12)
+                                .filterItems(rawPlaylists, normalized, SpaceCandidateSource.TARGETED_SEARCH, maxCandidates = 10)
                                 .filterIsInstance<PlaylistItem>()
                         }
                     val verifiedArtistsDeferred =
@@ -298,10 +442,87 @@ object SpaceFeedSupplement {
         }
 
         val merged = mergeAndDeduplicateHomeSections(collectedSections, userPlaylistIds = emptySet())
+        val rotatedSections =
+            merged.mapIndexed { index, section ->
+                section.copy(
+                    items =
+                        orderItemsForRefresh(
+                            items = section.items,
+                            refreshSeed = refreshSeed,
+                            previousItemIds = previousItemIds,
+                            salt = index + 1,
+                        ),
+                )
+            }
+
+        val apiQuickPicks =
+            rotatedSections
+                .filter { it.browseId?.startsWith("FEmusic_quickpicks") == true }
+                .flatMap { it.items.filterIsInstance<SongItem>() }
+        val apiKeepListening =
+            rotatedSections
+                .filter { it.browseId?.startsWith("FEmusic_listen_again") == true }
+                .flatMap { it.items.filterIsInstance<SongItem>() }
+        val apiForgotten =
+            rotatedSections
+                .filter { it.browseId?.startsWith("FEmusic_forgotten_favorites") == true }
+                .flatMap { it.items.filterIsInstance<SongItem>() }
+
+        val mergedQuickPicks =
+            orderItemsForRefresh(
+                items = (apiQuickPicks + verifiedLocalQuickPicks).distinctBy(::canonicalHomeItemId),
+                refreshSeed = refreshSeed,
+                previousItemIds = previousItemIds,
+                salt = 101,
+            )
+        val mergedKeepListening =
+            orderItemsForRefresh(
+                items = (apiKeepListening + verifiedLocalKeepListening).distinctBy(::canonicalHomeItemId),
+                refreshSeed = refreshSeed,
+                previousItemIds = previousItemIds,
+                salt = 102,
+            )
+        val mergedForgotten =
+            orderItemsForRefresh(
+                items = (apiForgotten + verifiedLocalForgotten).distinctBy(::canonicalHomeItemId),
+                refreshSeed = refreshSeed,
+                previousItemIds = previousItemIds,
+                salt = 103,
+            )
+
         return SpaceFilteredFeedResult(
-            sections = merged,
-            fallbackSongs = fallbackSongs,
+            sections = rotatedSections,
+            fallbackSongs =
+                orderItemsForRefresh(
+                    items = fallbackSongs.distinctBy(::canonicalHomeItemId),
+                    refreshSeed = refreshSeed,
+                    previousItemIds = previousItemIds,
+                    salt = 104,
+                ),
+            quickPicks = mergedQuickPicks,
+            keepListening = mergedKeepListening,
+            forgottenFavorites = mergedForgotten,
+            nextContinuation = currentContinuation,
         )
+    }
+
+    /**
+     * On refresh ([refreshSeed] > 0), floats freshly discovered items (not in [previousItemIds])
+     * ahead of previously displayed items and rotates within each group so pulling to refresh
+     * visibly updates recommendations just like the default Home tab.
+     */
+    internal fun <T : YTItem> orderItemsForRefresh(
+        items: List<T>,
+        refreshSeed: Int,
+        previousItemIds: Set<String>,
+        salt: Int = 0,
+    ): List<T> {
+        if (items.size <= 1 || refreshSeed <= 0) return items
+        val random = Random(refreshSeed * 131 + salt * 17)
+        val (previouslyShown, unseen) = items.partition { canonicalHomeItemId(it) in previousItemIds }
+        val freshOrder = if (unseen.size > 1) unseen.shuffled(random) else unseen
+        val repeatOrder = if (previouslyShown.size > 1) previouslyShown.shuffled(random) else previouslyShown
+        return freshOrder + repeatOrder
     }
 
     private fun prepareCandidateSections(sections: List<HomeSection>): List<HomeSection> =

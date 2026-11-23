@@ -5639,6 +5639,7 @@
     <string name="space_add_custom_filter">Add “%1$s”</string>
     <string name="space_filters_note">Songs outside your chosen languages and genres are filtered out using Last.fm tags.</string>
     <string name="space_lastfm_key_missing">Add a Last.fm API key for tag-based filtering</string>
+    <string name="space_lastfm_key_invalid">Last.fm API key rejected — tap to check</string>
     <string name="space_lastfm_key_label">Last.fm API key</string>
     <string name="space_lastfm_key_save">Apply key</string>
     <string name="space_edit_filters">Edit filters</string>

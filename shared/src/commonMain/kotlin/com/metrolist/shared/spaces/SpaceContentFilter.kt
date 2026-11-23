@@ -6,6 +6,7 @@
 package com.metrolist.shared.spaces
 
 import com.metrolist.shared.api.lastfm.LastFM
+import com.metrolist.shared.api.lastfm.LastFmArtistProfile
 import com.metrolist.shared.api.lastfm.LastFmTag
 import com.metrolist.shared.model.AlbumItem
 import com.metrolist.shared.model.ArtistItem
@@ -52,20 +53,33 @@ interface SpaceTagProvider {
         artist: String,
         album: String,
     ): List<LastFmTag>?
+
+    suspend fun artistProfile(artist: String): LastFmArtistProfile? = null
 }
 
 class LastFmSpaceTagProvider(
     private val httpClient: HttpClient,
-    maxConcurrentRequests: Int = 6,
-    private val maxCacheEntries: Int = 2000,
+    maxConcurrentRequests: Int = 10,
+    private val maxCacheEntries: Int = 2500,
 ) : SpaceTagProvider {
     private val cacheMutex = Mutex()
-    private val cache = LinkedHashMap<String, List<LastFmTag>>()
-    private val inFlight = mutableMapOf<String, CompletableDeferred<List<LastFmTag>?>>()
+    private val tagCache = LinkedHashMap<String, List<LastFmTag>>()
+    private val tagInFlight = mutableMapOf<String, CompletableDeferred<List<LastFmTag>?>>()
+    private val profileCache = LinkedHashMap<String, LastFmArtistProfile>()
+    private val profileInFlight = mutableMapOf<String, CompletableDeferred<LastFmArtistProfile?>>()
     private val semaphore = Semaphore(maxConcurrentRequests)
+    private var cachedApiKey: String = ""
 
     override val isConfigured: Boolean
-        get() = LastFM.apiKeyConfigured()
+        get() = LastFM.apiKeyConfigured() && !LastFM.hasInvalidApiKey()
+
+    suspend fun clearCache() {
+        cacheMutex.withLock {
+            tagCache.clear()
+            profileCache.clear()
+            cachedApiKey = LastFM.effectiveApiKey()
+        }
+    }
 
     override suspend fun trackTags(
         artist: String,
@@ -74,7 +88,7 @@ class LastFmSpaceTagProvider(
         val cleanArtist = cleanArtistName(artist)
         val cleanTrack = cleanMediaTitle(track)
         if (cleanArtist.isBlank() || cleanTrack.isBlank()) return emptyList()
-        return cachedLookup("track:${cleanArtist.lowercase()}|${cleanTrack.lowercase()}") {
+        return cachedTagLookup("track:${cleanArtist.lowercase()}|${cleanTrack.lowercase()}") {
             LastFM.getTrackTopTags(httpClient, cleanArtist, cleanTrack)
         }
     }
@@ -82,7 +96,7 @@ class LastFmSpaceTagProvider(
     override suspend fun artistTags(artist: String): List<LastFmTag>? {
         val cleanArtist = cleanArtistName(artist)
         if (cleanArtist.isBlank()) return emptyList()
-        return cachedLookup("artist:${cleanArtist.lowercase()}") {
+        return cachedTagLookup("artist:${cleanArtist.lowercase()}") {
             LastFM.getArtistTopTags(httpClient, cleanArtist)
         }
     }
@@ -94,12 +108,29 @@ class LastFmSpaceTagProvider(
         val cleanArtist = cleanArtistName(artist)
         val cleanAlbum = cleanMediaTitle(album)
         if (cleanArtist.isBlank() || cleanAlbum.isBlank()) return emptyList()
-        return cachedLookup("album:${cleanArtist.lowercase()}|${cleanAlbum.lowercase()}") {
+        return cachedTagLookup("album:${cleanArtist.lowercase()}|${cleanAlbum.lowercase()}") {
             LastFM.getAlbumTopTags(httpClient, cleanArtist, cleanAlbum)
         }
     }
 
-    private suspend fun cachedLookup(
+    override suspend fun artistProfile(artist: String): LastFmArtistProfile? {
+        val cleanArtist = cleanArtistName(artist)
+        if (cleanArtist.isBlank()) return LastFmArtistProfile()
+        return cachedProfileLookup("profile:${cleanArtist.lowercase()}") {
+            LastFM.getArtistProfile(httpClient, cleanArtist)
+        }
+    }
+
+    private suspend fun invalidateIfApiKeyChangedLocked() {
+        val currentKey = LastFM.effectiveApiKey()
+        if (currentKey != cachedApiKey) {
+            tagCache.clear()
+            profileCache.clear()
+            cachedApiKey = currentKey
+        }
+    }
+
+    private suspend fun cachedTagLookup(
         key: String,
         fetch: suspend () -> List<LastFmTag>?,
     ): List<LastFmTag>? {
@@ -109,14 +140,15 @@ class LastFmSpaceTagProvider(
         val createdDeferred: CompletableDeferred<List<LastFmTag>?>?
 
         cacheMutex.withLock {
-            cache[key]?.let { return it }
-            val active = inFlight[key]
+            invalidateIfApiKeyChangedLocked()
+            tagCache[key]?.let { return it }
+            val active = tagInFlight[key]
             if (active != null) {
                 existingDeferred = active
                 createdDeferred = null
             } else {
                 val created = CompletableDeferred<List<LastFmTag>?>()
-                inFlight[key] = created
+                tagInFlight[key] = created
                 existingDeferred = null
                 createdDeferred = created
             }
@@ -130,20 +162,73 @@ class LastFmSpaceTagProvider(
         return try {
             val result = semaphore.withPermit { fetch() }
             cacheMutex.withLock {
-                inFlight.remove(key)
-                if (result != null) {
-                    if (cache.size >= maxCacheEntries) {
-                        val oldestKey = cache.keys.firstOrNull()
-                        if (oldestKey != null) cache.remove(oldestKey)
+                tagInFlight.remove(key)
+                // Cache empty results (and transient failures if key is valid) to avoid hammering Last.fm on reload.
+                if (result != null && !LastFM.hasInvalidApiKey()) {
+                    if (tagCache.size >= maxCacheEntries) {
+                        val oldestKey = tagCache.keys.firstOrNull()
+                        if (oldestKey != null) tagCache.remove(oldestKey)
                     }
-                    cache[key] = result
+                    tagCache[key] = result
                 }
             }
             deferred.complete(result)
             result
         } catch (e: Throwable) {
             cacheMutex.withLock {
-                inFlight.remove(key)
+                tagInFlight.remove(key)
+            }
+            deferred.complete(null)
+            throw e
+        }
+    }
+
+    private suspend fun cachedProfileLookup(
+        key: String,
+        fetch: suspend () -> LastFmArtistProfile?,
+    ): LastFmArtistProfile? {
+        if (!isConfigured) return null
+
+        val existingDeferred: CompletableDeferred<LastFmArtistProfile?>?
+        val createdDeferred: CompletableDeferred<LastFmArtistProfile?>?
+
+        cacheMutex.withLock {
+            invalidateIfApiKeyChangedLocked()
+            profileCache[key]?.let { return it }
+            val active = profileInFlight[key]
+            if (active != null) {
+                existingDeferred = active
+                createdDeferred = null
+            } else {
+                val created = CompletableDeferred<LastFmArtistProfile?>()
+                profileInFlight[key] = created
+                existingDeferred = null
+                createdDeferred = created
+            }
+        }
+
+        if (existingDeferred != null) {
+            return existingDeferred.await()
+        }
+
+        val deferred = createdDeferred!!
+        return try {
+            val result = semaphore.withPermit { fetch() }
+            cacheMutex.withLock {
+                profileInFlight.remove(key)
+                if (result != null && !LastFM.hasInvalidApiKey()) {
+                    if (profileCache.size >= maxCacheEntries) {
+                        val oldestKey = profileCache.keys.firstOrNull()
+                        if (oldestKey != null) profileCache.remove(oldestKey)
+                    }
+                    profileCache[key] = result
+                }
+            }
+            deferred.complete(result)
+            result
+        } catch (e: Throwable) {
+            cacheMutex.withLock {
+                profileInFlight.remove(key)
             }
             deferred.complete(null)
             throw e
@@ -221,7 +306,7 @@ class SpaceContentFilter(
         sections: List<HomeSection>,
         filter: SpaceFilterSpec,
         source: SpaceCandidateSource,
-        maxCandidates: Int = 90,
+        maxCandidates: Int = 100,
     ): List<HomeSection> {
         val normalized = filter.normalized()
         if (!normalized.isActive || sections.isEmpty()) return sections
@@ -259,13 +344,14 @@ class SpaceContentFilter(
         filter: SpaceFilterSpec,
         source: SpaceCandidateSource,
     ): SpaceFilterDecision {
-        val artistName = song.artists.firstOrNull()?.name.orEmpty()
+        val artistNames = song.artists.map { it.name.trim() }.filter { it.isNotBlank() }
+        val primaryArtist = artistNames.firstOrNull().orEmpty()
         val combinedText =
             buildString {
                 append(song.title)
-                if (song.artists.isNotEmpty()) {
+                if (artistNames.isNotEmpty()) {
                     append(' ')
-                    append(song.artists.joinToString(" ") { it.name })
+                    append(artistNames.joinToString(" "))
                 }
                 song.album?.name?.takeIf { it.isNotBlank() }?.let {
                     append(' ')
@@ -273,36 +359,54 @@ class SpaceContentFilter(
                 }
             }
 
-        // Fast-path: reject obvious non-matching scripts before making any Last.fm HTTP requests.
+        // Fast-path: reject obvious non-matching scripts or Romanized foreign markers before any HTTP call.
         if (filter.languages.isNotEmpty()) {
-            val fastScriptDecision = quickScriptCheck(combinedText, filter.languages)
-            if (fastScriptDecision == SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT) {
+            val fastDecision = quickTextLanguageCheck(combinedText, filter.languages)
+            if (fastDecision == SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT) {
                 return SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT
             }
         }
 
-        val trackTags =
-            if (artistName.isNotBlank()) {
-                tagProvider.trackTags(artistName, song.title).orEmpty()
-            } else {
-                emptyList()
+        // Artist-first lookup: one cached Last.fm artist.getInfo call covers ALL songs by that artist
+        // and gives us BOTH top artist tags AND their English bio/origin nationality.
+        val artistSignals = fetchArtistsSignals(artistNames, checkCollaborators = filter.languages.isNotEmpty())
+
+        // Fast short-circuit if the artist's bio/tags clearly conflict with the requested language.
+        if (filter.languages.isNotEmpty() && (artistSignals.tags.isNotEmpty() || artistSignals.bioLanguages.isNotEmpty())) {
+            val artistLangDecision =
+                evaluateLanguage(
+                    text = combinedText,
+                    titleOnly = song.title,
+                    primaryTags = emptyList(),
+                    fallbackTags = artistSignals.tags,
+                    bioLanguages = artistSignals.bioLanguages,
+                    requestedLanguages = filter.languages,
+                    source = source,
+                )
+            if (artistLangDecision == SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT) {
+                return SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT
             }
-        val artistTags =
-            if (artistName.isNotBlank() && shouldFetchArtistFallback(trackTags, filter)) {
-                tagProvider.artistTags(artistName).orEmpty()
-            } else {
-                emptyList()
+        }
+
+        val extraGenres =
+            buildList {
+                song.genre?.takeIf { it.isNotBlank() }?.let { add(LastFmTag(it, 60)) }
+                extractSoundtrackTitleTags(combinedText).forEach { add(LastFmTag(it, 45)) }
             }
 
-        val extraGenres = buildList {
-            song.genre?.takeIf { it.isNotBlank() }?.let { add(LastFmTag(it, 60)) }
-            extractSoundtrackTitleTags(combinedText).forEach { add(LastFmTag(it, 45)) }
-        }
+        val trackTags =
+            if (primaryArtist.isNotBlank() && shouldFetchTrackTags(artistSignals, extraGenres, filter)) {
+                tagProvider.trackTags(primaryArtist, song.title).orEmpty()
+            } else {
+                emptyList()
+            }
 
         return evaluateSignals(
             text = combinedText,
+            titleOnly = song.title,
             primaryTags = trackTags + extraGenres,
-            fallbackTags = artistTags,
+            fallbackTags = artistSignals.tags,
+            bioLanguages = artistSignals.bioLanguages,
             filter = filter,
             source = source,
         )
@@ -313,40 +417,54 @@ class SpaceContentFilter(
         filter: SpaceFilterSpec,
         source: SpaceCandidateSource,
     ): SpaceFilterDecision {
-        val artistName = album.artists.firstOrNull()?.name.orEmpty()
+        val artistNames = album.artists.map { it.name.trim() }.filter { it.isNotBlank() }
+        val primaryArtist = artistNames.firstOrNull().orEmpty()
         val combinedText =
             buildString {
                 append(album.title)
-                if (album.artists.isNotEmpty()) {
+                if (artistNames.isNotEmpty()) {
                     append(' ')
-                    append(album.artists.joinToString(" ") { it.name })
+                    append(artistNames.joinToString(" "))
                 }
             }
 
         if (filter.languages.isNotEmpty()) {
-            if (quickScriptCheck(combinedText, filter.languages) == SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT) {
+            if (quickTextLanguageCheck(combinedText, filter.languages) == SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT) {
                 return SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT
             }
         }
 
-        val albumTags =
-            if (artistName.isNotBlank()) {
-                tagProvider.albumTags(artistName, album.title).orEmpty()
-            } else {
-                emptyList()
+        val artistSignals = fetchArtistsSignals(artistNames, checkCollaborators = filter.languages.isNotEmpty())
+        if (filter.languages.isNotEmpty() && (artistSignals.tags.isNotEmpty() || artistSignals.bioLanguages.isNotEmpty())) {
+            val artistLangDecision =
+                evaluateLanguage(
+                    text = combinedText,
+                    titleOnly = album.title,
+                    primaryTags = emptyList(),
+                    fallbackTags = artistSignals.tags,
+                    bioLanguages = artistSignals.bioLanguages,
+                    requestedLanguages = filter.languages,
+                    source = source,
+                )
+            if (artistLangDecision == SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT) {
+                return SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT
             }
-        val artistTags =
-            if (artistName.isNotBlank() && shouldFetchArtistFallback(albumTags, filter)) {
-                tagProvider.artistTags(artistName).orEmpty()
-            } else {
-                emptyList()
-            }
+        }
+
         val extraGenres = extractSoundtrackTitleTags(combinedText).map { LastFmTag(it, 55) }
+        val albumTags =
+            if (primaryArtist.isNotBlank() && shouldFetchTrackTags(artistSignals, extraGenres, filter)) {
+                tagProvider.albumTags(primaryArtist, album.title).orEmpty()
+            } else {
+                emptyList()
+            }
 
         return evaluateSignals(
             text = combinedText,
+            titleOnly = album.title,
             primaryTags = albumTags + extraGenres,
-            fallbackTags = artistTags,
+            fallbackTags = artistSignals.tags,
+            bioLanguages = artistSignals.bioLanguages,
             filter = filter,
             source = source,
         )
@@ -359,15 +477,17 @@ class SpaceContentFilter(
     ): SpaceFilterDecision {
         val combinedText = artist.title
         if (filter.languages.isNotEmpty()) {
-            if (quickScriptCheck(combinedText, filter.languages) == SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT) {
+            if (quickTextLanguageCheck(combinedText, filter.languages) == SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT) {
                 return SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT
             }
         }
-        val artistTags = tagProvider.artistTags(artist.title).orEmpty()
+        val artistSignals = fetchArtistsSignals(listOf(artist.title), checkCollaborators = false)
         return evaluateSignals(
             text = combinedText,
-            primaryTags = artistTags,
+            titleOnly = artist.title,
+            primaryTags = artistSignals.tags,
             fallbackTags = emptyList(),
+            bioLanguages = artistSignals.bioLanguages,
             filter = filter,
             source = source,
         )
@@ -386,13 +506,139 @@ class SpaceContentFilter(
         val extractedLanguageTags = extractTextLanguageTags(combinedText).map { LastFmTag(it, 80) }
         val extractedGenreTags = extractPlaylistGenreTags(combinedText).map { LastFmTag(it, 80) }
 
+        // Strict playlist language policy: when a language filter is active, generic language-less playlists
+        // (like "Hip-Hop Hits" or "Top Rap", which often localize to non-English regional hits) must NOT pass.
+        if (filter.languages.isNotEmpty()) {
+            val scriptLangs = SpaceFilterTaxonomy.detectLanguagesFromScript(combinedText)
+            val latinHints = SpaceFilterTaxonomy.detectLatinLanguageHints(combinedText)
+            val requestedIds = filter.languages.mapTo(mutableSetOf()) { resolveCanonicalLanguageId(it) }
+            val hasExplicitRequestedLang =
+                extractedLanguageTags.any { SpaceFilterTaxonomy.detectLanguageFromTag(it.name) in requestedIds } ||
+                    scriptLangs.any { it in requestedIds } ||
+                    latinHints.any { it in requestedIds }
+            if (!hasExplicitRequestedLang) {
+                return SpaceFilterDecision.REJECT_LANGUAGE_UNVERIFIED
+            }
+        }
+
         return evaluateSignals(
             text = combinedText,
+            titleOnly = playlist.title,
             primaryTags = extractedLanguageTags + extractedGenreTags,
             fallbackTags = emptyList(),
+            bioLanguages = emptySet(),
             filter = filter,
             source = source,
         )
+    }
+
+    private data class ArtistSignalBundle(
+        val tags: List<LastFmTag> = emptyList(),
+        val bioLanguages: Set<String> = emptySet(),
+    )
+
+    private suspend fun fetchArtistsSignals(
+        artistNames: List<String>,
+        checkCollaborators: Boolean,
+    ): ArtistSignalBundle {
+        val targets = if (checkCollaborators) artistNames.take(3) else artistNames.take(1)
+        if (targets.isEmpty()) return ArtistSignalBundle()
+
+        val profiles =
+            coroutineScope {
+                targets
+                    .mapIndexed { index, name ->
+                        async {
+                            val profile = tagProvider.artistProfile(name)
+                            val tags =
+                                when {
+                                    profile != null && profile.tags.isNotEmpty() -> profile.tags
+                                    index == 0 -> tagProvider.artistTags(name).orEmpty()
+                                    else -> emptyList()
+                                }
+                            val bioLangs =
+                                profile
+                                    ?.bioSummary
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?.let(SpaceFilterTaxonomy::detectLanguagesFromBio)
+                                    .orEmpty()
+                            tags to bioLangs
+                        }
+                    }.awaitAll()
+            }
+
+        val primaryTags = profiles.firstOrNull()?.first.orEmpty()
+        // Include collaborator tags only for language detection so a featured foreign artist flags language conflicts,
+        // while keeping genre evaluation anchored to the primary artist.
+        val collaboratorLanguageTags =
+            profiles
+                .drop(1)
+                .flatMap { it.first }
+                .filter { SpaceFilterTaxonomy.detectLanguageFromTag(it.name) != null }
+        val allBioLanguages = profiles.flatMapTo(mutableSetOf()) { it.second }
+
+        return ArtistSignalBundle(
+            tags = primaryTags + collaboratorLanguageTags,
+            bioLanguages = allBioLanguages,
+        )
+    }
+
+    /**
+     * Decides whether a per-track/album Last.fm lookup is needed after we already have the artist profile.
+     * Skipping track lookups when the artist profile already cleanly confirms language + single-focus genre
+     * cuts HTTP calls by ~65-80% and lets the user's own tracks pass even when track-level tags are sparse.
+     */
+    private fun shouldFetchTrackTags(
+        artistSignals: ArtistSignalBundle,
+        extraGenres: List<LastFmTag>,
+        filter: SpaceFilterSpec,
+    ): Boolean {
+        val artistUsefulTags = artistSignals.tags.map { it.name }.filterNot(SpaceFilterTaxonomy::isNoiseTag)
+        val combinedTags = artistUsefulTags + extraGenres.map { it.name }
+
+        // Soundtrack subgenres (Video Game vs Movie) need track/album-level cues to distinguish accurately.
+        val needsSoundtrackSubgenre =
+            filter.genres.any { it == "soundtracks_video_game" || it == "soundtracks_movie" }
+        if (needsSoundtrackSubgenre) return true
+
+        // If artist returned nothing at all, definitely try track-level tags.
+        if (artistUsefulTags.isEmpty() && artistSignals.bioLanguages.isEmpty()) return true
+
+        val requestedLangIds = filter.languages.mapTo(mutableSetOf()) { resolveCanonicalLanguageId(it) }
+        val artistConfirmedLanguage =
+            filter.languages.isEmpty() ||
+                artistSignals.bioLanguages.any { it in requestedLangIds } ||
+                artistUsefulTags.any { SpaceFilterTaxonomy.detectLanguageFromTag(it) in requestedLangIds }
+
+        val artistConfirmedGenre =
+            filter.genres.isEmpty() ||
+                filter.genres.any { SpaceFilterTaxonomy.tagsMatchRequestedGenre(combinedTags, it) }
+
+        if (!artistConfirmedLanguage || !artistConfirmedGenre) {
+            return true
+        }
+
+        // If a genre filter is active and the artist is a broad crossover artist (has 2+ unrelated top genres
+        // alongside the requested genre, e.g. Drake with hip-hop + pop + rnb), fetch track tags to screen
+        // out tracks from the artist's non-matching genre.
+        if (filter.genres.isNotEmpty()) {
+            val requestedGenreRoots =
+                filter.genres.mapTo(mutableSetOf()) { id ->
+                    SpaceFilterTaxonomy.genreOption(id)?.let { it.parentId ?: it.id } ?: id
+                }
+            val artistTopGenreRoots =
+                artistUsefulTags
+                    .flatMap { SpaceFilterTaxonomy.detectGenresFromTag(it) }
+                    .mapTo(mutableSetOf()) { id ->
+                        SpaceFilterTaxonomy.genreOption(id)?.let { it.parentId ?: it.id } ?: id
+                    }
+            val unrelatedTopGenres = artistTopGenreRoots - requestedGenreRoots
+            if (unrelatedTopGenres.size >= 2) {
+                return true
+            }
+        }
+
+        return false
     }
 
     /**
@@ -406,14 +652,18 @@ class SpaceContentFilter(
         fallbackTags: List<LastFmTag>,
         filter: SpaceFilterSpec,
         source: SpaceCandidateSource,
+        titleOnly: String = text,
+        bioLanguages: Set<String> = emptySet(),
     ): SpaceFilterDecision {
         // --- Stage 1: Language (highest priority) ---
         if (filter.languages.isNotEmpty()) {
             val languageDecision =
                 evaluateLanguage(
                     text = text,
+                    titleOnly = titleOnly,
                     primaryTags = primaryTags,
                     fallbackTags = fallbackTags,
+                    bioLanguages = bioLanguages,
                     requestedLanguages = filter.languages,
                     source = source,
                 )
@@ -439,16 +689,21 @@ class SpaceContentFilter(
         return SpaceFilterDecision.ALLOW
     }
 
-    private fun quickScriptCheck(
+    private fun quickTextLanguageCheck(
         text: String,
         requestedLanguages: List<String>,
     ): SpaceFilterDecision? {
-        val scriptLangs = SpaceFilterTaxonomy.detectLanguagesFromScript(text)
-        if (scriptLangs.isEmpty()) return null
         val requestedIds = requestedLanguages.mapTo(mutableSetOf()) { resolveCanonicalLanguageId(it) }
-        val hasMatchingScript = scriptLangs.any { it in requestedIds }
-        // Chinese Han characters can appear in Japanese titles without Kana; allow Last.fm tags to confirm if Japanese is selected.
-        if (!hasMatchingScript && !(scriptLangs == setOf("chinese") && "japanese" in requestedIds)) {
+        val scriptLangs = SpaceFilterTaxonomy.detectLanguagesFromScript(text)
+        if (scriptLangs.isNotEmpty()) {
+            val hasMatchingScript = scriptLangs.any { it in requestedIds }
+            // Chinese Han characters can appear in Japanese titles without Kana; allow Last.fm tags to confirm if Japanese is selected.
+            if (!hasMatchingScript && !(scriptLangs == setOf("chinese") && "japanese" in requestedIds)) {
+                return SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT
+            }
+        }
+        val latinHints = SpaceFilterTaxonomy.detectLatinLanguageHints(text)
+        if (latinHints.isNotEmpty() && latinHints.none { it in requestedIds }) {
             return SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT
         }
         return null
@@ -456,8 +711,10 @@ class SpaceContentFilter(
 
     private fun evaluateLanguage(
         text: String,
+        titleOnly: String,
         primaryTags: List<LastFmTag>,
         fallbackTags: List<LastFmTag>,
+        bioLanguages: Set<String>,
         requestedLanguages: List<String>,
         source: SpaceCandidateSource,
     ): SpaceFilterDecision {
@@ -478,7 +735,11 @@ class SpaceContentFilter(
 
         val latinHints = SpaceFilterTaxonomy.detectLatinLanguageHints(text)
         for (lang in latinHints) {
-            addScore(lang, 350)
+            addScore(lang, 450)
+        }
+
+        for (lang in bioLanguages) {
+            addScore(lang, 320)
         }
 
         fun scoreTags(
@@ -506,8 +767,8 @@ class SpaceContentFilter(
             }
         }
 
-        scoreTags(primaryTags, multiplier = 3, floor = 35)
-        scoreTags(fallbackTags, multiplier = 2, floor = 20)
+        scoreTags(primaryTags, multiplier = 3, floor = 40)
+        scoreTags(fallbackTags, multiplier = 3, floor = 35)
 
         // If Japanese is requested and title had Han-only script (detected as "chinese") while Last.fm confirms Japanese,
         // neutralize the ambiguous Han-only "chinese" script penalty.
@@ -516,16 +777,36 @@ class SpaceContentFilter(
         }
 
         // Reject any conflicting non-Latin script immediately.
-        val conflictingScript = scriptLangs.any { it !in requestedIds && (it != "chinese" || "japanese" !in requestedIds || (scores["japanese"] ?: 0) == 0) }
+        val conflictingScript =
+            scriptLangs.any {
+                it !in requestedIds && (it != "chinese" || "japanese" !in requestedIds || (scores["japanese"] ?: 0) == 0)
+            }
         if (conflictingScript) {
             return SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT
+        }
+
+        // Aggressive diacritic check when ONLY English (and/or Instrumental) is requested:
+        // Titles with non-English Latin accents (é, á, í, ó, ú, ç, ü, ä, ö, ñ, ã, õ, etc.) are rejected unless
+        // the artist/track explicitly confirms English AND has no foreign signals.
+        val hasForeignDiacritics =
+            "english" in requestedIds &&
+                requestedIds.all { it == "english" || it == "instrumental" } &&
+                SpaceFilterTaxonomy.hasNonEnglishLatinDiacritics(titleOnly)
+        if (hasForeignDiacritics) {
+            addScore("_foreign_diacritics", 380)
         }
 
         val bestRequested = requestedIds.maxOfOrNull { scores[it] ?: 0 } ?: 0
         val bestOther = scores.entries.filter { it.key !in requestedIds }.maxOfOrNull { it.value } ?: 0
 
-        // Strict conflict check: any non-requested language signal that dominates or appears without requested language confirmation.
-        if (bestOther > 0 && (bestRequested == 0 || bestOther >= bestRequested)) {
+        // Aggressive conflict check:
+        // 1. Any non-requested language signal with no requested confirmation -> REJECT.
+        // 2. Non-requested signal >= requested signal -> REJECT.
+        // 3. Strong non-requested signal (>= 250, e.g. artist bio/origin, Latin marker, or strong tag)
+        //    unless requested confirmation overwhelmingly dominates (>= 2x) -> REJECT.
+        if (bestOther > 0 &&
+            (bestRequested == 0 || bestOther >= bestRequested || (bestOther >= 250 && bestRequested < bestOther * 2))
+        ) {
             return SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT
         }
 
@@ -534,8 +815,9 @@ class SpaceContentFilter(
             return SpaceFilterDecision.ALLOW
         }
 
-        // English inference: Last.fm rarely adds a literal "english" tag to mainstream English songs,
-        // while non-English tracks carry origin/language tags or non-Latin scripts.
+        // Strict English fallback when Last.fm has no explicit Anglophone tag or bio:
+        // NEVER blindly allow any Latin text with genre tags (that leaks Romanized Hindi/Punjabi/Malayalam/Spanish/French!).
+        // Require pure ASCII/Latin text with zero foreign markers AND genuine English title word verification.
         val allTags = primaryTags + fallbackTags
         val hasRecognizedMusicTags =
             allTags.any { tag ->
@@ -546,19 +828,27 @@ class SpaceContentFilter(
             bestOther == 0 &&
             scriptLangs.isEmpty() &&
             latinHints.isEmpty() &&
+            !hasForeignDiacritics &&
             SpaceFilterTaxonomy.isPureLatinText(text)
         ) {
-            if (hasRecognizedMusicTags || SpaceFilterTaxonomy.hasStrongEnglishWordSignal(text)) {
+            val cleanTitle = LastFmSpaceTagProvider.cleanMediaTitle(titleOnly)
+            val titleWordCount = countWords(cleanTitle)
+            val englishTitleWords = SpaceFilterTaxonomy.countEnglishWords(cleanTitle)
+            val strongEnglishTitle =
+                englishTitleWords >= 2 ||
+                    (englishTitleWords >= 1 && titleWordCount in 1..2 && englishTitleWords == titleWordCount)
+            if (strongEnglishTitle && (hasRecognizedMusicTags || source == SpaceCandidateSource.TARGETED_SEARCH)) {
                 return SpaceFilterDecision.ALLOW
             }
         }
 
-        // No language signal at all: strict on Home feed, allow untagged from targeted search fallback.
-        return if (source == SpaceCandidateSource.TARGETED_SEARCH) {
-            SpaceFilterDecision.ALLOW
-        } else {
-            SpaceFilterDecision.REJECT_LANGUAGE_UNVERIFIED
+        // For non-English languages on targeted search, still allow untagged search hits only when there is zero conflict
+        // and the requested language isn't English (English uses the strict title/bio verification above).
+        if (source == SpaceCandidateSource.TARGETED_SEARCH && "english" !in requestedIds) {
+            return SpaceFilterDecision.ALLOW
         }
+
+        return SpaceFilterDecision.REJECT_LANGUAGE_UNVERIFIED
     }
 
     private fun evaluateGenre(
@@ -567,39 +857,52 @@ class SpaceContentFilter(
         requestedGenres: List<String>,
         source: SpaceCandidateSource,
     ): SpaceFilterDecision {
-        val primaryNames = primaryTags.map { it.name }.filterNot(SpaceFilterTaxonomy::isNoiseTag)
-        val fallbackNames = fallbackTags.map { it.name }.filterNot(SpaceFilterTaxonomy::isNoiseTag)
+        val primaryUseful = primaryTags.filterNot { SpaceFilterTaxonomy.isNoiseTag(it.name) }
+        val fallbackUseful = fallbackTags.filterNot { SpaceFilterTaxonomy.isNoiseTag(it.name) }
+        val primaryNames = primaryUseful.map { it.name }
+        val fallbackNames = fallbackUseful.map { it.name }
         val allNames = primaryNames + fallbackNames
 
-        // Check if any requested genre matches track/album tags first.
+        // 1. Direct match on track/album tags.
         if (primaryNames.isNotEmpty() && requestedGenres.any { SpaceFilterTaxonomy.tagsMatchRequestedGenre(primaryNames, it) }) {
             return SpaceFilterDecision.ALLOW
         }
 
-        // If track/album already has strong recognized genre tags that do NOT match, don't let generic artist tags override
-        // unless the artist tags strongly match AND the track tags aren't an outright contradictory genre.
-        val primaryHasRecognizedGenre = primaryNames.any { SpaceFilterTaxonomy.detectGenresFromTag(it).isNotEmpty() }
+        // 2. Artist tag match: allow unless the track itself carries a strong dominant unrelated genre (count >= 55)
+        //    with zero matching genre tags (prevents e.g. a pure pop/afrobeats track by a hip-hop crossover artist
+        //    while allowing sparse/weakly-tagged hip-hop tracks from the user's favorite hip-hop artists!).
+        val maxPrimaryUnrelatedCount =
+            primaryUseful
+                .filter { tag ->
+                    val detected = SpaceFilterTaxonomy.detectGenresFromTag(tag.name)
+                    detected.isNotEmpty() && requestedGenres.none { SpaceFilterTaxonomy.tagsMatchRequestedGenre(listOf(tag.name), it) }
+                }.maxOfOrNull { it.count } ?: 0
+        val trackHasStrongContradictingGenre = maxPrimaryUnrelatedCount >= 55
 
-        if (!primaryHasRecognizedGenre &&
+        if (!trackHasStrongContradictingGenre &&
             fallbackNames.isNotEmpty() &&
             requestedGenres.any { SpaceFilterTaxonomy.tagsMatchRequestedGenre(fallbackNames, it) }
         ) {
             return SpaceFilterDecision.ALLOW
         }
 
-        // Also check combined tags for compound/hierarchical matches (e.g. track="soundtrack", artist="video game music").
+        // 3. Combined tags for compound/hierarchical matches (e.g. track="soundtrack", artist="video game music").
         if (allNames.isNotEmpty() &&
-            !primaryHasRecognizedGenre &&
+            !trackHasStrongContradictingGenre &&
             requestedGenres.any { SpaceFilterTaxonomy.tagsMatchRequestedGenre(allNames, it) }
         ) {
             return SpaceFilterDecision.ALLOW
         }
 
         // Special case: if track is tagged generic "soundtrack"/"ost" and artist is tagged "video game music"
-        // (or vice versa), allow combining primary + fallback tags for Soundtrack subgenres!
+        // (or vice versa), allow combining primary + fallback tags for Soundtrack subgenres.
         val primaryIsGenericSoundtrack =
-            primaryNames.any { SpaceFilterTaxonomy.normalizeTag(it) in setOf("soundtrack", "ost", "score", "original soundtrack") }
+            primaryNames.any {
+                val n = SpaceFilterTaxonomy.normalizeTag(it)
+                n == "soundtrack" || n == "ost" || n == "score"
+            }
         if (primaryIsGenericSoundtrack &&
+            fallbackNames.isNotEmpty() &&
             requestedGenres.any { SpaceFilterTaxonomy.tagsMatchRequestedGenre(allNames, it) }
         ) {
             return SpaceFilterDecision.ALLOW
@@ -607,11 +910,10 @@ class SpaceContentFilter(
 
         val anyRecognizedGenre = allNames.any { SpaceFilterTaxonomy.detectGenresFromTag(it).isNotEmpty() }
         if (anyRecognizedGenre) {
-            // Last.fm gave us recognized genres and NONE of them matched our Space -> hard conflict!
             return SpaceFilterDecision.REJECT_GENRE_CONFLICT
         }
 
-        // No genre tags on Last.fm at all: strict on Home feed, allow untagged from targeted search fallback.
+        // Untagged on genre: strict on Home feed, allow untagged from targeted search fallback.
         return if (source == SpaceCandidateSource.TARGETED_SEARCH) {
             SpaceFilterDecision.ALLOW
         } else {
@@ -619,88 +921,109 @@ class SpaceContentFilter(
         }
     }
 
-    private fun shouldFetchArtistFallback(
-        primaryTags: List<LastFmTag>,
-        filter: SpaceFilterSpec,
-    ): Boolean {
-        if (!tagProvider.isConfigured) return false
-        if (primaryTags.isEmpty()) return true
-        val usefulTags = primaryTags.filterNot { SpaceFilterTaxonomy.isNoiseTag(it.name) }
-        if (usefulTags.isEmpty()) return true
-        val needsLang =
-            filter.languages.isNotEmpty() &&
-                usefulTags.none { SpaceFilterTaxonomy.detectLanguageFromTag(it.name) != null }
-        val needsGenre =
-            filter.genres.isNotEmpty() &&
-                usefulTags.none { SpaceFilterTaxonomy.detectGenresFromTag(it.name).isNotEmpty() }
-        return needsLang || needsGenre
+    private fun countWords(text: String): Int {
+        var count = 0
+        var inWord = false
+        for (ch in text) {
+            if (ch.isLetter() || ch == '\'') {
+                if (!inWord) {
+                    count++
+                    inWord = true
+                }
+            } else {
+                inWord = false
+            }
+        }
+        return count
     }
 
-    private fun resolveCanonicalLanguageId(input: String): String =
-        SpaceFilterTaxonomy.languageOption(input)?.id ?: SpaceFilterTaxonomy.normalizeTag(input)
+    private fun resolveCanonicalLanguageId(raw: String): String {
+        SpaceFilterTaxonomy.languageOption(raw)?.let { return it.id }
+        SpaceFilterTaxonomy.detectLanguageFromTag(raw)?.let { return it }
+        return SpaceFilterTaxonomy.normalizeTag(raw)
+    }
+
+    private fun extractTextLanguageTags(text: String): List<String> {
+        val lower = text.lowercase()
+        val found = mutableListOf<String>()
+        for (option in SpaceFilterTaxonomy.languages) {
+            val matched =
+                option.searchKeywords.any { kw ->
+                    kw.length >= 3 && containsWholePhrase(lower, kw.lowercase())
+                } ||
+                    option.lastFmTags.any { tag ->
+                        tag.length >= 3 && containsWholePhrase(lower, tag.lowercase())
+                    }
+            if (matched) {
+                found += option.id
+            }
+        }
+        return found.distinct()
+    }
 
     private fun extractSoundtrackTitleTags(text: String): List<String> {
-        val norm = SpaceFilterTaxonomy.normalizeTag(text)
-        if (norm.isBlank()) return emptyList()
+        val lower = text.lowercase()
         val found = mutableListOf<String>()
-        if (norm.contains("video game soundtrack") ||
-            norm.contains("video game ost") ||
-            norm.contains("game soundtrack") ||
-            norm.contains("game ost") ||
-            Regex("""\bvgm\b""").containsMatchIn(norm)
-        ) {
-            found += "video game soundtrack"
-        }
-        if (norm.contains("motion picture soundtrack") ||
-            norm.contains("movie soundtrack") ||
-            norm.contains("film soundtrack") ||
-            norm.contains("film score") ||
-            norm.contains("original motion picture")
+        if (lower.contains("original motion picture soundtrack") ||
+            lower.contains("original film score") ||
+            lower.contains("movie soundtrack") ||
+            lower.contains("film soundtrack")
         ) {
             found += "movie soundtrack"
+            found += "soundtrack"
         }
-        if (norm.contains("soundtrack") || Regex("""\bost\b""").containsMatchIn(norm)) {
+        if (lower.contains("original game soundtrack") ||
+            lower.contains("video game soundtrack") ||
+            lower.contains("game ost") ||
+            lower.contains("video game music")
+        ) {
+            found += "video game soundtrack"
+            found += "soundtrack"
+        }
+        if (lower.contains("original soundtrack") ||
+            containsWholePhrase(lower, "ost") ||
+            containsWholePhrase(lower, "soundtrack")
+        ) {
             found += "soundtrack"
         }
         return found.distinct()
     }
 
     private fun extractPlaylistGenreTags(text: String): List<String> {
-        val norm = SpaceFilterTaxonomy.normalizeTag(text)
-        if (norm.isBlank()) return emptyList()
-        val found = extractSoundtrackTitleTags(text).toMutableList()
-        for (genre in SpaceFilterTaxonomy.genres) {
-            val label = SpaceFilterTaxonomy.normalizeTag(genre.displayName.substringBefore(" ("))
-            if (label.length >= 3 && Regex("""\b${Regex.escape(label)}\b""").containsMatchIn(norm)) {
-                found += label
-            }
-            for (keyword in genre.searchKeywords) {
-                val kw = SpaceFilterTaxonomy.normalizeTag(keyword)
-                if (kw.length >= 4 && Regex("""\b${Regex.escape(kw)}\b""").containsMatchIn(norm)) {
-                    found += kw
+        val lower = text.lowercase()
+        val found = mutableListOf<String>()
+        found += extractSoundtrackTitleTags(text)
+        for (option in SpaceFilterTaxonomy.genres) {
+            val matched =
+                option.searchKeywords.any { kw ->
+                    kw.length >= 3 && containsWholePhrase(lower, kw.lowercase())
                 }
+            if (matched) {
+                found += option.searchQueryTerm
             }
         }
         return found.distinct()
     }
 
-    private fun extractTextLanguageTags(text: String): List<String> {
-        val norm = SpaceFilterTaxonomy.normalizeTag(text)
-        if (norm.isBlank()) return emptyList()
-        val found = mutableListOf<String>()
-        for (lang in SpaceFilterTaxonomy.languages) {
-            val label = SpaceFilterTaxonomy.normalizeTag(lang.displayName.substringBefore(" ("))
-            if (label.length >= 4 && Regex("""\b${Regex.escape(label)}\b""").containsMatchIn(norm)) {
-                found += lang.id
-            }
+    private fun containsWholePhrase(
+        haystack: String,
+        needle: String,
+    ): Boolean {
+        var index = haystack.indexOf(needle)
+        while (index >= 0) {
+            val beforeOk = index == 0 || !haystack[index - 1].isLetterOrDigit()
+            val afterIndex = index + needle.length
+            val afterOk = afterIndex >= haystack.length || !haystack[afterIndex].isLetterOrDigit()
+            if (beforeOk && afterOk) return true
+            index = haystack.indexOf(needle, index + 1)
         }
-        return found.distinct()
+        return false
     }
 
     private fun <K, V> MutableMap<K, V>.putIfMissing(
         key: K,
         value: V,
     ) {
-        if (key !in this) put(key, value)
+        if (!containsKey(key)) put(key, value)
     }
 }

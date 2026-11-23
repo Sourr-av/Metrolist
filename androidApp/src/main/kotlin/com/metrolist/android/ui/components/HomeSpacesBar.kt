@@ -83,6 +83,7 @@ import com.metrolist.shared.generated.resources.space_genres_hint
 import com.metrolist.shared.generated.resources.space_genres_label
 import com.metrolist.shared.generated.resources.space_languages_hint
 import com.metrolist.shared.generated.resources.space_languages_label
+import com.metrolist.shared.generated.resources.space_lastfm_key_invalid
 import com.metrolist.shared.generated.resources.space_lastfm_key_label
 import com.metrolist.shared.generated.resources.space_lastfm_key_missing
 import com.metrolist.shared.generated.resources.space_lastfm_key_save
@@ -212,6 +213,7 @@ fun HomeSpacesBar(
 fun SpaceActiveFiltersBar(
     space: HomeSpace,
     lastFmConfigured: Boolean,
+    lastFmKeyInvalid: Boolean = false,
     onEditFiltersClick: () -> Unit,
     onConfigureLastFmKeyClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -254,9 +256,12 @@ fun SpaceActiveFiltersBar(
             contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
             onClick = onEditFiltersClick,
         )
-        if (!lastFmConfigured) {
+        if (!lastFmConfigured || lastFmKeyInvalid) {
             FilterBadgePill(
-                label = stringResource(Res.string.space_lastfm_key_missing),
+                label =
+                    stringResource(
+                        if (lastFmKeyInvalid) Res.string.space_lastfm_key_invalid else Res.string.space_lastfm_key_missing,
+                    ),
                 icon = MetrolistIcons.Outlined.Warning,
                 containerColor = MaterialTheme.colorScheme.errorContainer,
                 contentColor = MaterialTheme.colorScheme.onErrorContainer,
@@ -827,11 +832,17 @@ fun SpaceEditorSheet(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
-            // --- Optional inline Last.fm API key entry when not configured in build/local.properties ---
-            if (!lastFmConfigured || showLastFmInput) {
+            // --- Optional inline Last.fm API key entry when not configured or rejected by Last.fm ---
+            val lastFmInvalid = LastFM.hasInvalidApiKey()
+            if (!lastFmConfigured || lastFmInvalid || showLastFmInput) {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    color =
+                        if (lastFmInvalid) {
+                            MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerHigh
+                        },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Column(
@@ -843,13 +854,16 @@ fun SpaceEditorSheet(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Icon(
-                                imageVector = MetrolistIcons.Outlined.Key,
+                                imageVector = if (lastFmInvalid) MetrolistIcons.Outlined.Warning else MetrolistIcons.Outlined.Key,
                                 contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
+                                tint = if (lastFmInvalid) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(16.dp),
                             )
                             Text(
-                                text = stringResource(Res.string.space_lastfm_key_missing),
+                                text =
+                                    stringResource(
+                                        if (lastFmInvalid) Res.string.space_lastfm_key_invalid else Res.string.space_lastfm_key_missing,
+                                    ),
                                 style = MaterialTheme.typography.labelLarge,
                             )
                         }

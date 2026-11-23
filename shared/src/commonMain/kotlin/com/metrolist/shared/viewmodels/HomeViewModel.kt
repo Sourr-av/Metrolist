@@ -251,6 +251,12 @@ class HomeViewModel(
 
     private val spaceContentFilter = SpaceContentFilter(LastFmSpaceTagProvider(httpClient))
 
+    @Volatile
+    private var spaceRefreshSeed: Int = 0
+
+    @Volatile
+    private var previousSpaceItemIds: Set<String> = emptySet()
+
     val hasActiveSpaceFilter: Boolean
         get() = activeSpaceFilter?.isActive == true
 
@@ -773,7 +779,7 @@ class HomeViewModel(
                         val exploreSectionsDeferred =
                             async {
                                 homeRequestResult("explore") {
-                                    if ((!isFiltered && !signedIn) || spaceFilter != null) {
+                                    if (!isFiltered && !signedIn && spaceFilter == null) {
                                         GlobalYouTubeRepository.instance
                                             .getHomePageData(browseId = "FEmusic_explore")
                                             .sections
@@ -783,9 +789,9 @@ class HomeViewModel(
                                 }
                             }
                         val quickPicksDeferred =
-                            async { if (isFiltered || spaceFilter != null) emptyList() else database.dao().quickPicks().first() }
+                            async { if (isFiltered) emptyList() else database.dao().quickPicks().first() }
                         val forgottenFavoritesDeferred =
-                            async { if (isFiltered || spaceFilter != null) emptyList() else database.dao().forgottenFavorites().first() }
+                            async { if (isFiltered) emptyList() else database.dao().forgottenFavorites().first() }
                         val userPlaylistsDeferred =
                             async {
                                 if (spaceFilter != null) {
@@ -796,7 +802,7 @@ class HomeViewModel(
                             }
                         val keepListeningDeferred =
                             async {
-                                if (isFiltered || spaceFilter != null) {
+                                if (isFiltered) {
                                     emptyList()
                                 } else {
                                     database
@@ -825,24 +831,26 @@ class HomeViewModel(
                         val hydratedPrimarySections =
                             rawHomeSections.withLocalSongMetadata(primaryLocalSongMetadata).withoutNonMusicalVideos()
                         if (spaceFilter != null) {
-                            val exploreSections = exploreSectionsDeferred.await().getOrDefault(emptyList())
-                            val exploreMetadata = loadLocalSongMetadata(exploreSections)
-                            if (generation != contentLoadGeneration ||
-                                sessionKey != GlobalYouTube.innerTube.sessionSnapshot().homeCacheSessionKey()
-                            ) {
-                                return@supervisorScope
-                            }
-                            val hydratedExploreSections =
-                                exploreSections.withLocalSongMetadata(exploreMetadata).withoutNonMusicalVideos()
+                            val localQuickPicks = quickPicksDeferred.await().map { it.toSongItem() }
+                            val localForgottenFavorites = forgottenFavoritesDeferred.await().map { it.toSongItem() }
+                            val localKeepListening = keepListeningDeferred.await().map { it.toSongItem() }
+                            val currentRefreshSeed = spaceRefreshSeed
+                            val priorItemIds = previousSpaceItemIds
                             val filteredFeed =
                                 SpaceFeedSupplement.buildFilteredFeed(
                                     rawHomeSections = hydratedPrimarySections,
                                     homeChips = homePageData.chips,
-                                    exploreSections = hydratedExploreSections,
+                                    exploreSections = emptyList(),
                                     filter = spaceFilter,
                                     contentFilter = spaceContentFilter,
                                     shelfTitles = spaceShelfTitles,
                                     signedIn = signedIn,
+                                    initialContinuation = homePageData.continuation,
+                                    localQuickPicks = localQuickPicks,
+                                    localKeepListening = localKeepListening,
+                                    localForgottenFavorites = localForgottenFavorites,
+                                    refreshSeed = currentRefreshSeed,
+                                    previousItemIds = priorItemIds,
                                 )
                             if (generation != contentLoadGeneration ||
                                 sessionKey != GlobalYouTube.innerTube.sessionSnapshot().homeCacheSessionKey()
@@ -850,12 +858,9 @@ class HomeViewModel(
                                 return@supervisorScope
                             }
                             val filteredSections = filteredFeed.sections
-                            val filteredQuickPicks =
-                                findSectionSongs(filteredSections, "FEmusic_quickpicks").distinctBy(::canonicalHomeItemId)
-                            val filteredKeepListening =
-                                findSectionSongs(filteredSections, "FEmusic_listen_again").distinctBy(::canonicalHomeItemId)
-                            val filteredForgottenFavorites =
-                                findSectionSongs(filteredSections, "FEmusic_forgotten_favorites").distinctBy(::canonicalHomeItemId)
+                            val filteredQuickPicks = filteredFeed.quickPicks
+                            val filteredKeepListening = filteredFeed.keepListening
+                            val filteredForgottenFavorites = filteredFeed.forgottenFavorites
                             val filteredSpeedDial =
                                 speedDialRecommendations(
                                     quickPicks = filteredQuickPicks.ifEmpty { filteredFeed.fallbackSongs },
@@ -863,9 +868,19 @@ class HomeViewModel(
                                         filteredSections
                                             .filterNot { it.browseId?.startsWith("FEmusic_quickpicks") == true }
                                             .map { it.items },
-                                    localFallback = emptyList(),
+                                    localFallback = filteredKeepListening + filteredQuickPicks,
                                     excludedPlaylistIds = emptySet(),
                                 ).distinctBy(::canonicalHomeItemId)
+                            val shownIds =
+                                buildSet {
+                                    filteredSections.forEach { section ->
+                                        section.items.take(12).forEach { add(canonicalHomeItemId(it)) }
+                                    }
+                                    filteredQuickPicks.take(12).forEach { add(canonicalHomeItemId(it)) }
+                                    filteredKeepListening.take(12).forEach { add(canonicalHomeItemId(it)) }
+                                    filteredSpeedDial.take(12).forEach { add(canonicalHomeItemId(it)) }
+                                }
+                            previousSpaceItemIds = shownIds
                             val filteredLoadedState =
                                 _uiState.value.copy(
                                     contentLocaleSignature = currentContentLocaleSignature(),
@@ -880,7 +895,7 @@ class HomeViewModel(
                                     isLoadingMore = false,
                                     chips = emptyList(),
                                     selectedChip = null,
-                                    continuation = homePageData.continuation,
+                                    continuation = filteredFeed.nextContinuation,
                                     trending =
                                         findSectionsByBrowseId(filteredSections, "FEmusic_charts")
                                             .flatMap { it.items.filterIsInstance<SongItem>() }
@@ -1700,6 +1715,8 @@ class HomeViewModel(
         val normalized = filter?.normalized()?.takeIf { it.isActive }
         if (normalized == activeSpaceFilter) return
         activeSpaceFilter = normalized
+        spaceRefreshSeed = 0
+        previousSpaceItemIds = emptySet()
         chipContentCache = emptyMap()
         cachedAllContent = null
         cachedSelectedChipContent = null
@@ -1713,6 +1730,9 @@ class HomeViewModel(
     }
 
     fun refresh(onComplete: () -> Unit) {
+        if (hasActiveSpaceFilter) {
+            spaceRefreshSeed++
+        }
         chipContentCache = emptyMap()
         val selectedChip = _uiState.value.selectedChip?.takeUnless { Settings.shared.hidePodcasts && it.isPodcastChip }
         loadHomeData(

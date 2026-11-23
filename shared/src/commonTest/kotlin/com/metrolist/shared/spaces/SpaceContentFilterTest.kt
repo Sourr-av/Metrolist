@@ -5,19 +5,23 @@
 
 package com.metrolist.shared.spaces
 
+import com.metrolist.shared.api.lastfm.LastFmArtistProfile
 import com.metrolist.shared.api.lastfm.LastFmTag
 import com.metrolist.shared.model.ArtistTiny
+import com.metrolist.shared.model.PlaylistItem
 import com.metrolist.shared.model.SongItem
 import com.metrolist.shared.settings.SpaceFilterSpec
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class SpaceContentFilterTest {
     private class FakeTagProvider(
         private val trackMap: Map<Pair<String, String>, List<LastFmTag>> = emptyMap(),
         private val artistMap: Map<String, List<LastFmTag>> = emptyMap(),
         private val albumMap: Map<Pair<String, String>, List<LastFmTag>> = emptyMap(),
+        private val profileMap: Map<String, LastFmArtistProfile> = emptyMap(),
     ) : SpaceTagProvider {
         override val isConfigured: Boolean = true
 
@@ -32,18 +36,20 @@ class SpaceContentFilterTest {
             artist: String,
             album: String,
         ): List<LastFmTag> = albumMap[artist.lowercase() to album.lowercase()].orEmpty()
+
+        override suspend fun artistProfile(artist: String): LastFmArtistProfile? = profileMap[artist.lowercase()]
     }
 
     private fun song(
         id: String,
         title: String,
-        artist: String,
+        vararg artists: String,
     ): SongItem =
         SongItem(
             id = id,
             title = title,
             thumbnail = null,
-            artists = listOf(ArtistTiny(id = "a_$id", name = artist)),
+            artists = artists.mapIndexed { idx, name -> ArtistTiny(id = "a_${id}_$idx", name = name) },
             album = null,
         )
 
@@ -79,10 +85,114 @@ class SpaceContentFilterTest {
                 SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT,
                 filter.evaluate(song("4", "Mirchi", "DIVINE"), spec, SpaceCandidateSource.HOME_FEED),
             )
-            // Even in targeted search fallback, a conflicting language MUST still be rejected.
             assertEquals(
                 SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT,
                 filter.evaluate(song("2", "MONACO", "Bad Bunny"), spec, SpaceCandidateSource.TARGETED_SEARCH),
+            )
+        }
+
+    @Test
+    fun artistBioVerifiesEnglishHipHopAndRejectsForeignRappersWithGenericHipHopTags() =
+        runTest {
+            val provider =
+                FakeTagProvider(
+                    profileMap =
+                        mapOf(
+                            "travis scott" to
+                                LastFmArtistProfile(
+                                    tags = listOf(LastFmTag("hip-hop", 100), LastFmTag("trap", 88), LastFmTag("rap", 76)),
+                                    bioSummary = "Travis Scott is an American rapper and record producer from Houston, Texas.",
+                                ),
+                            "seedhe maut" to
+                                LastFmArtistProfile(
+                                    tags = listOf(LastFmTag("hip-hop", 100), LastFmTag("rap", 88)),
+                                    bioSummary = "Seedhe Maut is an Indian hip-hop duo from New Delhi.",
+                                ),
+                            "jul" to
+                                LastFmArtistProfile(
+                                    tags = listOf(LastFmTag("hip-hop", 100), LastFmTag("rap", 88)),
+                                    bioSummary = "Jul is a French rapper from Marseille.",
+                                ),
+                        ),
+                )
+            val filter = SpaceContentFilter(provider)
+            val spec = SpaceFilterSpec(languages = listOf("english"), genres = listOf("hip_hop"))
+
+            // Even with a single non-dictionary title and no track tags, artist bio + tags verify English Hip-Hop!
+            assertEquals(
+                SpaceFilterDecision.ALLOW,
+                filter.evaluate(song("1", "FE!N", "Travis Scott"), spec, SpaceCandidateSource.HOME_FEED),
+            )
+            // Foreign rappers tagged only ["hip-hop", "rap"] without language tags MUST be rejected via bio!
+            assertEquals(
+                SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT,
+                filter.evaluate(song("2", "Nanchaku", "Seedhe Maut"), spec, SpaceCandidateSource.HOME_FEED),
+            )
+            assertEquals(
+                SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT,
+                filter.evaluate(song("3", "Tchikita", "Jul"), spec, SpaceCandidateSource.HOME_FEED),
+            )
+        }
+
+    @Test
+    fun weakTrackTagDoesNotBlockUserHipHopArtistTrack() =
+        runTest {
+            val provider =
+                FakeTagProvider(
+                    profileMap =
+                        mapOf(
+                            "kanye west" to
+                                LastFmArtistProfile(
+                                    tags = listOf(LastFmTag("hip-hop", 100), LastFmTag("rap", 90), LastFmTag("pop", 60), LastFmTag("rnb", 50)),
+                                    bioSummary = "Kanye West is an American rapper and producer from Chicago.",
+                                ),
+                        ),
+                    trackMap =
+                        mapOf(
+                            ("kanye west" to "flashing lights") to listOf(LastFmTag("electronic", 20)),
+                            ("kanye west" to "only one") to listOf(LastFmTag("pop", 95), LastFmTag("ballad", 80)),
+                        ),
+                )
+            val filter = SpaceContentFilter(provider)
+            val spec = SpaceFilterSpec(languages = listOf("english"), genres = listOf("hip_hop"))
+
+            // Weak unrelated track tag (count=20) should NOT override strong hip-hop artist profile.
+            assertEquals(
+                SpaceFilterDecision.ALLOW,
+                filter.evaluate(song("1", "Flashing Lights", "Kanye West"), spec, SpaceCandidateSource.HOME_FEED),
+            )
+            // Strong unrelated track tag (count=95) with zero hip-hop tag on a crossover artist still gets filtered out.
+            assertEquals(
+                SpaceFilterDecision.REJECT_GENRE_CONFLICT,
+                filter.evaluate(song("2", "Only One", "Kanye West"), spec, SpaceCandidateSource.HOME_FEED),
+            )
+        }
+
+    @Test
+    fun collaboratorForeignLanguageIsRejectedFromEnglishSpace() =
+        runTest {
+            val provider =
+                FakeTagProvider(
+                    profileMap =
+                        mapOf(
+                            "metro boomin" to
+                                LastFmArtistProfile(
+                                    tags = listOf(LastFmTag("hip-hop", 100), LastFmTag("trap", 90)),
+                                    bioSummary = "Metro Boomin is an American record producer.",
+                                ),
+                            "bad bunny" to
+                                LastFmArtistProfile(
+                                    tags = listOf(LastFmTag("spanish", 100), LastFmTag("reggaeton", 90)),
+                                    bioSummary = "Bad Bunny is a Puerto Rican rapper and singer.",
+                                ),
+                        ),
+                )
+            val filter = SpaceContentFilter(provider)
+            val spec = SpaceFilterSpec(languages = listOf("english"), genres = listOf("hip_hop"))
+
+            assertEquals(
+                SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT,
+                filter.evaluate(song("1", "Midnight Track", "Metro Boomin", "Bad Bunny"), spec, SpaceCandidateSource.HOME_FEED),
             )
         }
 
@@ -114,27 +224,52 @@ class SpaceContentFilterTest {
         }
 
     @Test
-    fun untaggedSongIsRejectedOnHomeFeedButAllowedFromTargetedSearchIfUnconflicted() =
+    fun untaggedEnglishRulesAreAggressiveAgainstRomanizedForeignTitles() =
         runTest {
             val provider = FakeTagProvider()
             val filter = SpaceContentFilter(provider)
             val spec = SpaceFilterSpec(languages = listOf("english"), genres = listOf("hip_hop"))
 
-            val untaggedEnglish = song("1", "Brand New Cypher", "Indie MC")
+            val clearEnglish = song("1", "Never Back Down Tonight", "Indie MC")
             assertEquals(
                 SpaceFilterDecision.REJECT_LANGUAGE_UNVERIFIED,
-                filter.evaluate(untaggedEnglish, spec, SpaceCandidateSource.HOME_FEED),
+                filter.evaluate(clearEnglish, spec, SpaceCandidateSource.HOME_FEED),
             )
             assertEquals(
                 SpaceFilterDecision.ALLOW,
-                filter.evaluate(untaggedEnglish, spec, SpaceCandidateSource.TARGETED_SEARCH),
+                filter.evaluate(clearEnglish, spec, SpaceCandidateSource.TARGETED_SEARCH),
             )
 
-            // Non-Latin script song MUST still be rejected even in TARGETED_SEARCH!
-            val japaneseSong = song("2", "新しい曲", "日本人")
+            // Ambiguous / Romanized non-English untagged titles MUST be rejected even in TARGETED_SEARCH!
+            val romanizedForeign = song("2", "Cheques", "Unknown Artist")
+            assertEquals(
+                SpaceFilterDecision.REJECT_LANGUAGE_UNVERIFIED,
+                filter.evaluate(romanizedForeign, spec, SpaceCandidateSource.TARGETED_SEARCH),
+            )
+
+            val japaneseSong = song("3", "新しい曲", "日本人")
             assertEquals(
                 SpaceFilterDecision.REJECT_LANGUAGE_CONFLICT,
                 filter.evaluate(japaneseSong, spec, SpaceCandidateSource.TARGETED_SEARCH),
+            )
+        }
+
+    @Test
+    fun genericLanguageLessPlaylistIsRejectedWhenLanguageFilterActive() =
+        runTest {
+            val filter = SpaceContentFilter(FakeTagProvider())
+            val spec = SpaceFilterSpec(languages = listOf("english"), genres = listOf("hip_hop"))
+
+            val genericPlaylist = PlaylistItem(id = "PL1", title = "Hip-Hop Hits", author = "YouTube Music", thumbnail = null)
+            val explicitEnglishPlaylist = PlaylistItem(id = "PL2", title = "US Hip-Hop Essentials", author = "YouTube Music", thumbnail = null)
+
+            assertEquals(
+                SpaceFilterDecision.REJECT_LANGUAGE_UNVERIFIED,
+                filter.evaluate(genericPlaylist, spec, SpaceCandidateSource.HOME_FEED),
+            )
+            assertEquals(
+                SpaceFilterDecision.ALLOW,
+                filter.evaluate(explicitEnglishPlaylist, spec, SpaceCandidateSource.HOME_FEED),
             )
         }
 
@@ -164,6 +299,25 @@ class SpaceContentFilterTest {
                 filter.evaluate(track, SpaceFilterSpec(genres = listOf("soundtracks_movie")), SpaceCandidateSource.HOME_FEED),
             )
         }
+
+    @Test
+    fun refreshOrderingFloatsUnseenItemsAheadOfPreviouslyShown() {
+        val items =
+            listOf(
+                song("1", "Old Song 1", "Artist"),
+                song("2", "Old Song 2", "Artist"),
+                song("3", "Fresh Song 3", "Artist"),
+                song("4", "Fresh Song 4", "Artist"),
+            )
+        val reordered =
+            SpaceFeedSupplement.orderItemsForRefresh(
+                items = items,
+                refreshSeed = 1,
+                previousItemIds = setOf("1", "2"),
+            )
+        assertTrue(reordered.take(2).map { it.id }.toSet() == setOf("3", "4"))
+        assertTrue(reordered.drop(2).map { it.id }.toSet() == setOf("1", "2"))
+    }
 
     @Test
     fun cleanMediaTitleStripsYouTubeSuffixes() {

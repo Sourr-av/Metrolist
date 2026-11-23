@@ -1200,7 +1200,7 @@ object SpaceFilterTaxonomy {
 
     /**
      * Strong Latin-script language indicators for titles/artists when scripts alone are Latin.
-     * Kept high-precision so English titles aren't falsely flagged.
+     * Aggressive enough to catch Romanized Indian & European tracks that leak into English feeds.
      */
     fun detectLatinLanguageHints(text: String): Set<String> {
         if (text.isBlank()) return emptySet()
@@ -1228,29 +1228,77 @@ object SpaceFilterTaxonomy {
             result += "portuguese"
         }
 
-        // High-precision multi-word stopword checks (require >= 2 language stopwords to avoid false positives)
         fun countMatches(markers: Set<String>): Int = words.count { it in markers }
 
-        if (countMatches(SPANISH_STOPWORDS) >= 2) result += "spanish"
-        if (countMatches(FRENCH_STOPWORDS) >= 2) result += "french"
-        if (countMatches(GERMAN_STOPWORDS) >= 2) result += "german"
-        if (countMatches(PORTUGUESE_STOPWORDS) >= 2) result += "portuguese"
-        if (countMatches(ITALIAN_STOPWORDS) >= 2) result += "italian"
-        if (countMatches(HINDI_ROMANIZED_MARKERS) >= 2 || lower.contains("bollywood") || lower.contains("t-series")) {
+        if (countMatches(SPANISH_STOPWORDS) >= 2 || countMatches(SPANISH_UNIQUE_WORDS) >= 1) result += "spanish"
+        if (countMatches(FRENCH_STOPWORDS) >= 2 || countMatches(FRENCH_UNIQUE_WORDS) >= 1) result += "french"
+        if (countMatches(GERMAN_STOPWORDS) >= 2 || countMatches(GERMAN_UNIQUE_WORDS) >= 1) result += "german"
+        if (countMatches(PORTUGUESE_STOPWORDS) >= 2 || countMatches(PORTUGUESE_UNIQUE_WORDS) >= 1) result += "portuguese"
+        if (countMatches(ITALIAN_STOPWORDS) >= 2 || countMatches(ITALIAN_UNIQUE_WORDS) >= 1) result += "italian"
+
+        if (countMatches(HINDI_ROMANIZED_MARKERS) >= 2 ||
+            countMatches(HINDI_UNIQUE_WORDS) >= 1 ||
+            lower.contains("bollywood") ||
+            lower.contains("t-series") ||
+            lower.contains("saregama") ||
+            lower.contains("zee music")
+        ) {
             result += "hindi"
         }
-        if (lower.contains("malayalam") || lower.contains("mollywood")) result += "malayalam"
-        if (lower.contains("tamil") || lower.contains("kollywood")) result += "tamil"
-        if (lower.contains("telugu") || lower.contains("tollywood")) result += "telugu"
-        if (lower.contains("punjabi") || lower.contains("bhangra")) result += "punjabi"
+        if (countMatches(PUNJABI_ROMANIZED_MARKERS) >= 1 || lower.contains("punjabi") || lower.contains("bhangra")) {
+            result += "punjabi"
+        }
+        if (countMatches(MALAYALAM_ROMANIZED_MARKERS) >= 1 || lower.contains("malayalam") || lower.contains("mollywood")) {
+            result += "malayalam"
+        }
+        if (countMatches(TAMIL_ROMANIZED_MARKERS) >= 1 || lower.contains("tamil") || lower.contains("kollywood")) {
+            result += "tamil"
+        }
+        if (countMatches(TELUGU_ROMANIZED_MARKERS) >= 1 || lower.contains("telugu") || lower.contains("tollywood")) {
+            result += "telugu"
+        }
 
         return result
     }
 
-    fun hasStrongEnglishWordSignal(text: String): Boolean {
+    /**
+     * Detects non-English Latin diacritics (e.g. á, é, í, ó, ú, ç, ü, ä, ö, è, ê, î, ô, ù, ñ, ã, õ)
+     * outside a small allowlist of common English loanwords / artist names.
+     */
+    fun hasNonEnglishLatinDiacritics(text: String): Boolean {
+        if (text.isBlank()) return false
         val words = extractWords(text.lowercase())
-        return words.any { it in ENGLISH_STRONG_WORDS }
+        return words.any { word ->
+            word !in ENGLISH_DIACRITIC_ALLOWLIST && word.any { it in NON_ENGLISH_LATIN_DIACRITICS }
+        }
     }
+
+    /**
+     * Extracts artist/origin languages from an English Last.fm bio summary (first ~380 chars where
+     * Last.fm states nationality, origin city/country, and primary language).
+     */
+    fun detectLanguagesFromBio(bio: String): Set<String> {
+        if (bio.isBlank()) return emptySet()
+        // Focus on the opening bio sentences where nationality & language are stated ("X is an American rapper...").
+        // Strip "of <X> descent/heritage" clauses so e.g. "American rapper of Puerto Rican descent" stays English.
+        val lead = bio.take(380).lowercase().replace(BIO_DESCENT_REGEX, " ")
+        val padded = " ${lead.replace(BIO_PUNCTUATION_REGEX, " ")} "
+        val result = mutableSetOf<String>()
+
+        for ((langId, cues) in BIO_LANGUAGE_CUES) {
+            if (cues.any { cue -> padded.contains(" $cue ") }) {
+                result += langId
+            }
+        }
+        return result
+    }
+
+    fun countEnglishWords(text: String): Int {
+        val words = extractWords(text.lowercase())
+        return words.count { it in ENGLISH_STRONG_WORDS }
+    }
+
+    fun hasStrongEnglishWordSignal(text: String): Boolean = countEnglishWords(text) >= 1
 
     private fun extractWords(text: String): List<String> {
         val result = mutableListOf<String>()
@@ -1346,8 +1394,13 @@ object SpaceFilterTaxonomy {
 
     /**
      * Builds targeted YouTube Music search queries from the Space's languages and genres.
+     * Uses [rotationSeed] so pulling to refresh rotates through distinct query angles instead of
+     * returning the exact same top-20 search results every time.
      */
-    fun buildFallbackSearchQueries(filter: SpaceFilterSpec): List<String> {
+    fun buildFallbackSearchQueries(
+        filter: SpaceFilterSpec,
+        rotationSeed: Int = 0,
+    ): List<String> {
         val normalized = filter.normalized()
         if (!normalized.isActive) return emptyList()
 
@@ -1360,31 +1413,60 @@ object SpaceFilterTaxonomy {
                 genreOption(genreId)?.searchQueryTerm ?: genreId.trim().lowercase()
             }
 
-        val queries = linkedSetOf<String>()
+        val pool = linkedSetOf<String>()
+        val suffixes = listOf("songs", "essentials", "hits", "classics", "top tracks")
         when {
             langTerms.isNotEmpty() && genreTerms.isNotEmpty() -> {
-                for (lang in langTerms.take(2)) {
-                    for (genre in genreTerms.take(2)) {
-                        queries += "$lang $genre songs"
-                        queries += "$lang $genre"
+                val aliasesByLang = langTerms.take(2).map(::fallbackLanguageQueryAliases)
+                val maxAliases = aliasesByLang.maxOf { it.size }
+                for (suffixIndex in suffixes.indices) {
+                    val suffix = suffixes[suffixIndex]
+                    for (aliasIndex in 0 until maxAliases) {
+                        for (aliases in aliasesByLang) {
+                            val alias = aliases.getOrNull(aliasIndex) ?: continue
+                            for (genre in genreTerms.take(2)) {
+                                pool += "$alias $genre $suffix"
+                            }
+                        }
                     }
                 }
             }
             langTerms.isNotEmpty() -> {
-                for (lang in langTerms.take(3)) {
-                    queries += "$lang songs"
-                    queries += "best $lang music"
+                val aliasesByLang = langTerms.take(3).map(::fallbackLanguageQueryAliases)
+                val maxAliases = aliasesByLang.maxOf { it.size }
+                for (suffix in suffixes) {
+                    for (aliasIndex in 0 until maxAliases) {
+                        for (aliases in aliasesByLang) {
+                            val alias = aliases.getOrNull(aliasIndex) ?: continue
+                            pool += "$alias $suffix"
+                        }
+                    }
                 }
             }
             genreTerms.isNotEmpty() -> {
-                for (genre in genreTerms.take(3)) {
-                    queries += "$genre songs"
-                    queries += "best $genre music"
+                for (suffix in suffixes) {
+                    for (genre in genreTerms.take(3)) {
+                        pool += "$genre $suffix"
+                    }
                 }
             }
         }
-        return queries.toList().take(4)
+        val all = pool.toList()
+        if (all.isEmpty()) return emptyList()
+        val shift = ((rotationSeed % all.size) + all.size) % all.size
+        val rotated = all.drop(shift) + all.take(shift)
+        return rotated.take(4)
     }
+
+    private fun fallbackLanguageQueryAliases(langTerm: String): List<String> =
+        when (langTerm) {
+            "english" -> listOf("english", "american", "us", "uk")
+            "spanish" -> listOf("spanish", "latin")
+            "hindi" -> listOf("hindi", "bollywood")
+            "japanese" -> listOf("japanese", "j-pop")
+            "korean" -> listOf("korean", "k-pop")
+            else -> listOf(langTerm)
+        }
 
     fun formatFilterSummary(filter: SpaceFilterSpec): String {
         val normalized = filter.normalized()
@@ -1394,29 +1476,272 @@ object SpaceFilterTaxonomy {
         return parts.joinToString(" · ")
     }
 
+    private val BIO_PUNCTUATION_REGEX = Regex("[^a-z0-9\\s'-]")
+
+    private val BIO_DESCENT_REGEX = Regex("""\bof\s+[a-z\s-]{2,28}\s+(?:descent|heritage|ancestry|extraction)\b""")
+
+    private val NON_ENGLISH_LATIN_DIACRITICS = "áéíóúàèìòùâêîôûäëïöüçñãõåøæšžčřďťňěůý"
+
+    private val ENGLISH_DIACRITIC_ALLOWLIST =
+        setOf(
+            "café", "cafe", "fiancé", "fiancee", "fiancée", "naïve", "résumé", "déjà", "deja",
+            "cliché", "beyoncé", "rosé", "tiësto", "motörhead", "mötley", "crüe", "zoë", "chloë",
+            "noël", "touché", "façade", "protégé", "soignée", "blasé", "passé", "risqué",
+        )
+
+    private val BIO_LANGUAGE_CUES: Map<String, List<String>> =
+        mapOf(
+            "english" to
+                listOf(
+                    "american", "british", "english", "canadian", "australian", "irish", "scottish",
+                    "welsh", "new zealand", "united states", "united kingdom", "los angeles",
+                    "new york", "brooklyn", "harlem", "bronx", "queens", "compton", "atlanta",
+                    "chicago", "detroit", "houston", "memphis", "miami", "philadelphia", "oakland",
+                    "new orleans", "toronto", "london", "manchester", "birmingham", "california",
+                    "texas", "georgia", "florida", "illinois", "michigan", "north carolina",
+                    "virginia", "louisiana", "tennessee", "ohio", "pennsylvania",
+                ),
+            "hindi" to
+                listOf(
+                    "indian", "hindi", "bollywood", "mumbai", "new delhi", "delhi", "desi",
+                    "hindustani", "pakistani", "urdu", "lahore", "karachi", "kolkata", "bengaluru",
+                    "bangalore", "pune", "jaipur", "lucknow", "uttar pradesh", "maharashtra",
+                ),
+            "punjabi" to
+                listOf(
+                    "punjabi", "punjab", "chandigarh", "ludhiana", "amritsar", "jalandhar",
+                    "patiala", "bhangra", "brampton punjabi",
+                ),
+            "malayalam" to
+                listOf(
+                    "malayalam", "kerala", "kochi", "cochin", "mollywood", "thiruvananthapuram",
+                    "trivandrum", "kozhikode", "thrissur", "ernakulam", "kottayam",
+                ),
+            "tamil" to
+                listOf(
+                    "tamil", "chennai", "tamil nadu", "kollywood", "madras", "coimbatore", "madurai",
+                ),
+            "telugu" to
+                listOf(
+                    "telugu", "hyderabad", "andhra pradesh", "telangana", "tollywood", "visakhapatnam",
+                ),
+            "spanish" to
+                listOf(
+                    "spanish", "puerto rican", "puerto rico", "mexican", "mexico", "colombian",
+                    "colombia", "argentine", "argentinian", "argentina", "dominican", "chilean",
+                    "chile", "venezuelan", "venezuela", "peruvian", "peru", "cuban", "cuba",
+                    "ecuadorian", "uruguayan", "spain", "madrid", "barcelona", "medellin",
+                    "medellín", "bogota", "bogotá", "buenos aires", "reggaeton", "urbano",
+                ),
+            "french" to
+                listOf(
+                    "french", "france", "paris", "marseille", "lyon", "belgian", "belgium",
+                    "quebec", "québec", "francophone", "rap français", "rap francais",
+                ),
+            "german" to
+                listOf(
+                    "german", "germany", "berlin", "hamburg", "frankfurt", "munich", "austrian",
+                    "austria", "vienna", "deutschrap", "german-language",
+                ),
+            "portuguese" to
+                listOf(
+                    "brazilian", "brazil", "brasil", "portuguese", "portugal", "são paulo",
+                    "sao paulo", "rio de janeiro", "lisbon", "carioca", "sertanejo", "baile funk",
+                ),
+            "italian" to
+                listOf(
+                    "italian", "italy", "milan", "milano", "rome", "roma", "naples", "napoli", "turin",
+                ),
+            "korean" to
+                listOf(
+                    "south korean", "korean", "korea", "seoul", "busan", "k-pop", "k-rap", "k-hip-hop",
+                ),
+            "japanese" to
+                listOf(
+                    "japanese", "japan", "tokyo", "osaka", "kyoto", "yokohama", "shibuya", "j-pop", "j-rock",
+                ),
+            "russian" to
+                listOf(
+                    "russian", "russia", "moscow", "saint petersburg", "ukrainian", "ukraine",
+                    "belarusian", "kazakh", "soviet",
+                ),
+            "turkish" to
+                listOf(
+                    "turkish", "turkey", "istanbul", "ankara", "izmir", "anatolian",
+                ),
+            "arabic" to
+                listOf(
+                    "arabic", "egyptian", "egypt", "cairo", "lebanese", "lebanon", "beirut",
+                    "moroccan", "morocco", "tunisian", "algerian", "saudi", "emirati", "palestinian",
+                    "jordanian", "iraqi", "syrian",
+                ),
+            "chinese" to
+                listOf(
+                    "chinese", "china", "beijing", "shanghai", "taiwanese", "taiwan", "taipei",
+                    "hong kong", "mandarin", "cantonese", "mandopop", "cantopop",
+                ),
+            "indonesian" to
+                listOf(
+                    "indonesian", "indonesia", "jakarta", "bandung", "surabaya", "dangdut",
+                ),
+            "thai" to
+                listOf(
+                    "thai", "thailand", "bangkok", "t-pop",
+                ),
+            "vietnamese" to
+                listOf(
+                    "vietnamese", "vietnam", "hanoi", "ho chi minh", "saigon", "v-pop",
+                ),
+            "polish" to
+                listOf(
+                    "polish", "poland", "warsaw", "krakow", "kraków",
+                ),
+            "swedish" to
+                listOf(
+                    "swedish", "sweden", "stockholm", "gothenburg",
+                ),
+            "dutch" to
+                listOf(
+                    "dutch", "netherlands", "amsterdam", "rotterdam", "flemish",
+                ),
+        )
+
     private val SPANISH_STOPWORDS =
-        setOf("el", "los", "las", "del", "con", "por", "para", "sin", "pero", "como", "cuando", "donde", "quiero", "corazon", "corazón", "noche", "contigo", "siempre", "amor", "vida", "estoy", "eres")
+        setOf("el", "los", "las", "del", "con", "por", "para", "sin", "pero", "como", "cuando", "donde", "quiero", "corazon", "corazón", "noche", "contigo", "siempre", "amor", "vida", "estoy", "eres", "todo", "nada", "bien", "mal", "aqui", "aquí", "ahora", "nunca", "solo", "sola", "tengo", "tienes", "vamos", "dime", "dame", "ella", "ellos", "nosotros", "mientras", "porque", "aunque", "hasta", "desde")
+
+    private val SPANISH_UNIQUE_WORDS =
+        setOf("corazón", "corazon", "contigo", "siempre", "quiero", "estoy", "cuando", "noche", "bailando", "perreo", "reggaeton", "reggaetón", "corrido", "corridos", "tumbados", "chica", "mamacita", "despacito", "cabrón", "cabron", "bebecita", "bellakeo", "bichota")
 
     private val FRENCH_STOPWORDS =
-        setOf("je", "tu", "nous", "vous", "avec", "pour", "dans", "sans", "mais", "comme", "tout", "tous", "une", "des", "les", "aux", "suis", "est", "sont", "c'est", "mon", "ton", "amour", "nuit", "coeur", "cœur")
+        setOf("je", "tu", "nous", "vous", "avec", "pour", "dans", "sans", "mais", "comme", "tout", "tous", "une", "des", "les", "aux", "suis", "est", "sont", "c'est", "mon", "ton", "amour", "nuit", "coeur", "cœur", "pas", "plus", "rien", "jamais", "toujours", "quand", "alors", "encore", "chez", "moi", "toi", "lui", "elle", "notre", "votre", "leur")
+
+    private val FRENCH_UNIQUE_WORDS =
+        setOf("c'est", "j'ai", "n'est", "qu'est", "toujours", "jamais", "maintenant", "aujourd'hui", "beaucoup", "chanson", "bande", "organisée", "organisee", "putain", "frère", "frere")
 
     private val GERMAN_STOPWORDS =
-        setOf("ich", "du", "wir", "ihr", "und", "nicht", "mit", "für", "fur", "von", "auf", "aus", "ein", "eine", "der", "die", "das", "den", "dem", "mein", "dein", "liebe", "nacht", "herz")
+        setOf("ich", "du", "wir", "ihr", "und", "nicht", "mit", "für", "fur", "von", "auf", "aus", "ein", "eine", "der", "die", "das", "den", "dem", "mein", "dein", "liebe", "nacht", "herz", "auch", "noch", "schon", "immer", "wieder", "alles", "nichts", "kann", "will", "bist", "sind", "aber", "oder", "wenn", "weil", "hier", "dort")
+
+    private val GERMAN_UNIQUE_WORDS =
+        setOf("nicht", "immer", "wieder", "schon", "liebe", "deutschrap", "bruder", "schwarz", "nacht", "träume", "traume", "leben", "allein")
 
     private val PORTUGUESE_STOPWORDS =
-        setOf("não", "nao", "você", "voce", "com", "para", "pelo", "pela", "dos", "das", "uma", "meu", "minha", "teu", "saudade", "coração", "coracao", "noite", "tudo", "mais")
+        setOf("não", "nao", "você", "voce", "com", "para", "pelo", "pela", "dos", "das", "uma", "meu", "minha", "teu", "saudade", "coração", "coracao", "noite", "tudo", "mais", "aqui", "agora", "sempre", "nunca", "muito", "quem", "onde", "quando", "porque", "assim", "então", "entao")
+
+    private val PORTUGUESE_UNIQUE_WORDS =
+        setOf("saudade", "coração", "você", "não", "então", "novinha", "favela", "mandela", "baile", "cachaça", "sertanejo")
 
     private val ITALIAN_STOPWORDS =
-        setOf("che", "con", "per", "una", "degli", "delle", "sono", "sei", "siamo", "tutto", "sempre", "cuore", "notte", "amore", "senza", "quando", "anche")
+        setOf("che", "con", "per", "una", "degli", "delle", "sono", "sei", "siamo", "tutto", "sempre", "cuore", "notte", "amore", "senza", "quando", "anche", "questo", "quello", "perché", "perche", "niente", "ancora", "sempre", "insieme", "dentro", "fuori")
+
+    private val ITALIAN_UNIQUE_WORDS =
+        setOf("sempre", "cuore", "insieme", "perché", "niente", "ancora", "ragazzo", "ragazza", "canzone", "stelle")
 
     private val HINDI_ROMANIZED_MARKERS =
-        setOf("dil", "pyaar", "pyar", "ishq", "tera", "teri", "mera", "meri", "tum", "tumhare", "mein", "hain", "hai", "kya", "nahi", "zindagi", "mohabbat", "yaad", "raat", "khuda", "sanam", "jaane", "kabhi")
+        setOf(
+            "dil", "pyaar", "pyar", "ishq", "tera", "teri", "tere", "mera", "meri", "mere",
+            "tum", "tumhe", "tumhara", "tumhari", "tumse", "hum", "humara", "mein", "hain",
+            "hai", "kya", "kyun", "kaise", "kaisa", "kahan", "nahi", "nahin", "zindagi",
+            "mohabbat", "yaad", "yaar", "yaari", "raat", "khuda", "rabba", "sanam", "jaan",
+            "jaane", "kabhi", "abhi", "phir", "aaj", "subah", "shaam", "baarish", "barish",
+            "saath", "naina", "aankhein", "khwab", "khwaab", "chahat", "dhadkan", "junoon",
+            "deewana", "deewani", "awara", "pagal", "bhai", "duniya", "bawa", "tu", "tujhe",
+            "tujhse", "mujhe", "mujhse", "apna", "apni", "apne", "wala", "wali", "wale",
+            "kar", "karo", "karke", "baat", "baatein", "saari", "saare", "lagta", "lagti",
+            "chale", "chala", "gaya", "gayi", "gaye", "hua", "hui", "hue", "rha", "raha", "rahi",
+        )
+
+    private val HINDI_UNIQUE_WORDS =
+        setOf(
+            "zindagi", "mohabbat", "dhadkan", "baarish", "aankhein", "deewana", "deewani",
+            "bollywood", "hindustani", "shayar", "shayari", "tauba", "kalaastar", "choli",
+            "khuda", "rabba", "mehboob", "mehbooba", "bewafa", "aashiqui", "aashiq", "sajna",
+            "sajni", "pardesi", "channa", "kesariya", "tumse", "tumhara", "tumhari", "mujhse",
+            "tujhse", "khabar", "manzil", "safar", "dastaan", "nakhre", "nakhra", "gully",
+        )
+
+    private val PUNJABI_ROMANIZED_MARKERS =
+        setOf(
+            "jatt", "jatti", "pind", "munde", "mundey", "kudi", "kudiye", "gabru", "billo",
+            "sohneya", "sohniye", "sardaar", "sardar", "bhangra", "patiala", "chitta", "veere",
+            "mitran", "vailly", "mutiyar", "gidha", "punjabi", "daku", "sidhu", "moose",
+            "aujla", "dhillon", "dosanjh", "wazir", "shinda", "gurinder", "diljit", "karan",
+            "shubh", "cheema", "navaan", "arjan", "parmish", "amrit", "babbu", "gippy",
+        )
+
+    private val MALAYALAM_ROMANIZED_MARKERS =
+        setOf(
+            "malayalam", "mollywood", "kerala", "kochi", "enthu", "entha", "ente", "ninte",
+            "njan", "kutti", "chetta", "cheta", "machane", "mazha", "puzha", "kadal", "kanavu",
+            "pranayam", "sneham", "ishtam", "manasu", "manassu", "poove", "nilavu", "onam",
+            "vishu", "paattu", "paatu", "kalippu", "adichu", "thirumali", "vedan", "fejo",
+            "dabzee", "sushin", "shyam", "arjun", "neeraj", "babyjean", "muhfaad",
+        )
+
+    private val TAMIL_ROMANIZED_MARKERS =
+        setOf(
+            "tamil", "kollywood", "chennai", "kaadhal", "kadhal", "uyire", "uyir", "anbe",
+            "kannae", "kanne", "nenjam", "nenje", "mazhai", "poovae", "thangam", "machan",
+            "nanba", "nanban", "vaathi", "kuthu", "gaana", "ennai", "unnai", "verithanam",
+            "thalaivar", "thalaiva", "anirudh", "arivu", "asalkolaar", "paal", "dabba",
+        )
+
+    private val TELUGU_ROMANIZED_MARKERS =
+        setOf(
+            "telugu", "tollywood", "hyderabad", "prema", "hrudayam", "nenu", "nuvvu", "neeku",
+            "naaku", "pilla", "bava", "chitti", "paata", "jathara", "thaman", "devi",
+        )
 
     private val ENGLISH_STRONG_WORDS =
         setOf(
-            "the", "and", "you", "your", "with", "from", "that", "this", "what", "when",
-            "where", "never", "always", "heart", "night", "love", "world", "time", "life",
-            "back", "down", "over", "into", "about", "like", "know", "don't", "can't",
-            "won't", "i'm", "it's", "we're", "they", "there", "here", "still", "more",
+            "the", "and", "you", "your", "yours", "with", "from", "that", "this", "these", "those",
+            "what", "when", "where", "which", "who", "whom", "whose", "why", "how",
+            "never", "always", "ever", "forever", "tonight", "tomorrow", "yesterday", "today",
+            "heart", "night", "nights", "love", "world", "time", "times", "life", "live", "living",
+            "back", "down", "over", "under", "into", "onto", "about", "above", "below", "between",
+            "through", "without", "within", "around", "behind", "before", "after", "again", "away",
+            "like", "know", "knows", "knew", "think", "thought", "feel", "feels", "feeling", "felt",
+            "want", "wants", "wanted", "need", "needs", "needed", "make", "makes", "made", "take",
+            "takes", "took", "give", "gives", "gave", "come", "comes", "came", "going", "gone",
+            "don't", "can't", "won't", "ain't", "isn't", "aren't", "wasn't", "weren't", "didn't",
+            "doesn't", "haven't", "hasn't", "wouldn't", "couldn't", "shouldn't",
+            "i'm", "it's", "we're", "you're", "they're", "he's", "she's", "that's", "there's",
+            "i'll", "we'll", "you'll", "i've", "we've", "you've", "let's",
+            "gonna", "wanna", "gotta", "kinda", "sorta", "outta", "tryna", "bout",
+            "there", "here", "still", "more", "most", "much", "many", "some", "every", "everything",
+            "nothing", "something", "anything", "nobody", "somebody", "everybody", "anyone", "someone",
+            "just", "only", "very", "really", "actually", "almost", "already", "enough", "too",
+            "not", "all", "both", "each", "other", "another", "such", "same", "own",
+            "for", "are", "was", "were", "been", "being", "have", "has", "had", "will", "would",
+            "could", "should", "might", "must", "can", "may", "shall", "get", "got", "getting",
+            "say", "says", "said", "tell", "tells", "told", "talk", "talking", "speak", "watch",
+            "look", "looking", "see", "seen", "saw", "hear", "heard", "listen", "find", "found",
+            "keep", "kept", "hold", "holding", "held", "stay", "leave", "left", "turn", "stop",
+            "start", "begin", "end", "wait", "waiting", "call", "calling", "called", "play", "playing",
+            "run", "running", "walk", "walking", "ride", "riding", "drive", "driving", "fly", "flying",
+            "fall", "falling", "fell", "rise", "rising", "stand", "standing", "sit", "sitting",
+            "fight", "fighting", "kill", "killing", "die", "dying", "dead", "death", "alive",
+            "cry", "crying", "smile", "laugh", "dream", "dreams", "dreaming", "sleep", "sleeping",
+            "wake", "waking", "break", "breaking", "broken", "burn", "burning", "shine", "shining",
+            "money", "cash", "rich", "poor", "gold", "golden", "silver", "diamond", "diamonds",
+            "street", "streets", "hood", "city", "town", "home", "house", "room", "door", "window",
+            "road", "way", "ways", "side", "place", "world", "earth", "sky", "heaven", "hell",
+            "king", "queen", "crown", "throne", "god", "devil", "angel", "angels", "ghost", "ghosts",
+            "soul", "mind", "head", "eyes", "face", "hands", "hand", "blood", "bones", "skin", "body",
+            "fire", "flame", "smoke", "water", "rain", "storm", "wind", "snow", "ice", "cold", "hot",
+            "sun", "moon", "star", "stars", "light", "lights", "dark", "darkness", "shadow", "shadows",
+            "black", "white", "blue", "red", "green", "grey", "gray", "pink", "purple", "yellow",
+            "good", "bad", "real", "fake", "true", "false", "right", "wrong", "high", "low", "deep",
+            "hard", "harder", "soft", "fast", "faster", "slow", "strong", "stronger", "weak",
+            "big", "small", "little", "long", "short", "old", "new", "young", "free", "wild", "crazy",
+            "lonely", "alone", "sorry", "happy", "sad", "mad", "angry", "lost", "ready", "better", "best", "worst",
+            "baby", "girl", "girls", "boy", "boys", "man", "men", "woman", "women", "people",
+            "friend", "friends", "family", "brother", "brothers", "sister", "mother", "mama", "father",
+            "song", "music", "beat", "beats", "sound", "sounds", "voice", "words", "story", "stories",
+            "party", "club", "dance", "dancing", "drink", "drinking", "drunk", "high", "weed",
+            "power", "glory", "victory", "war", "peace", "pain", "fear", "hope", "faith", "trust",
+            "truth", "lies", "secret", "secrets", "memory", "memories", "moment", "moments", "reason",
+            "game", "games", "rules", "change", "chance", "choice", "price", "cost", "worth",
+            "freestyle", "remix", "interlude", "intro", "outro", "acoustic", "live", "version",
+            "fuck", "fucking", "shit", "bitch", "bitches", "nigga", "niggas", "damn", "ass", "hell",
         )
 }
