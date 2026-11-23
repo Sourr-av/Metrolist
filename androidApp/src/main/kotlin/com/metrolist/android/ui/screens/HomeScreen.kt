@@ -237,7 +237,7 @@ fun HomeScreen(
     var lastFmConfigVersion by remember { mutableLongStateOf(0L) }
     val lastFmConfigured = remember(lastFmConfigVersion) { LastFM.apiKeyConfigured() }
     val lastFmKeyInvalid =
-        remember(lastFmConfigVersion, uiState.isLoading, uiState.isRefreshing, uiState.data.size) {
+        remember(lastFmConfigVersion, uiState.isLoading, uiState.isRefreshing, uiState.data?.size) {
             LastFM.hasInvalidApiKey()
         }
     val authManager = remember { AuthManager() }
