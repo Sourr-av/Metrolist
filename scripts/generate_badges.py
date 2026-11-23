@@ -33,7 +33,6 @@ ANDROID_CREDIT = "Android robot artwork by Google, used under Creative Commons A
 BADGES = [
     ("android-stable", "android", True, "Stable release", "Android", "APK", "Download the stable Android APK", ANDROID_CREDIT),
     ("android-nightly", "android", True, "Nightly build", "Android", "APK", "Download the nightly Android APK", ANDROID_CREDIT),
-    ("ios-ipa", "apple", True, "Sideload", "iOS & iPadOS", "IPA", "Download the iOS IPA", ""),
     ("windows-installer", "windows", True, "Installer", "Windows x64", "EXE", "Download the Windows x64 installer", ""),
     ("windows-portable", "windows", True, "Portable", "Windows x64", "ZIP", "Download the portable Windows x64 ZIP", ""),
     ("windows-arm64", "windows", True, "Portable", "Windows ARM64", "ZIP", "Download the portable Windows ARM64 ZIP", ""),

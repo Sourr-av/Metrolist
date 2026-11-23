@@ -2,7 +2,6 @@ package com.metrolist.shared.api
 
 import com.metrolist.shared.model.SongItem
 import com.metrolist.shared.playback.MusicQueue
-import com.metrolist.shared.storage.IosDownloadQueue
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -59,8 +58,6 @@ class UnavailablePlaylistTest {
             assertEquals(songs, queue.items.value)
             queue.toggleShuffle()
             assertEquals(songs.toSet(), queue.items.value.toSet())
-            val downloads = IosDownloadQueue("")
-            assertEquals(songs.size, downloads.enqueue(songs, emptySet(), emptyMap(), false, 1L))
             songs.zip(rows).forEach { (song, row) ->
                 val identity =
                     row

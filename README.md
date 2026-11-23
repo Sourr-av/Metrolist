@@ -2,7 +2,7 @@
   <img src="fastlane/metadata/android/en-US/images/icon.png" alt="Metrolist app icon" width="200" height="200" />
   <div>
       <h1>Metrolist</h1>
-      <h3>A Material Design YouTube Music client for Android, iOS and desktop</h3>
+      <h3>A Material Design YouTube Music client for Android and desktop</h3>
       <div style="display: flex; gap: 1rem;">
         <a href="https://github.com/MetrolistGroup/Metrolist/releases"><img src="https://img.shields.io/github/v/release/MetrolistGroup/Metrolist?style=for-the-badge&labelColor=0d1117" alt="Latest release" /></a>
         <a href="https://github.com/MetrolistGroup/Metrolist/blob/main/LICENSE"><img src="https://img.shields.io/github/license/MetrolistGroup/metrolist?style=for-the-badge&labelColor=0d1117" alt="License" /></a>
@@ -52,7 +52,7 @@ DO NOT REMOVE THIS SECTION, I WANT TO ADD IT LATER!!!
 </div>
 
 - YouTube Music playback with or without signing in
-- Android 7+, iOS 15+, Windows 10+, macOS 15+ and Linux support
+- Android 7+, Windows 10+, macOS 15+ and Linux support
 - Material 3 Expressive design
 - Discord Rich Presence and scrobbling through Last.fm and ListenBrainz
 - No ads
@@ -77,7 +77,7 @@ DO NOT REMOVE THIS SECTION, I WANT TO ADD IT LATER!!!
 
 <h1><a id="download-now"></a>Download now</h1>
 
-<p>Setup guides: <a href="docs/install/android.md">Android</a> · <a href="docs/install/ios.md">iOS</a> · <a href="docs/install/windows.md">Windows</a> · <a href="docs/install/macos.md">macOS</a> · <a href="docs/install/linux.md">Linux</a></p>
+<p>Setup guides: <a href="docs/install/android.md">Android</a> · <a href="docs/install/windows.md">Windows</a> · <a href="docs/install/macos.md">macOS</a> · <a href="docs/install/linux.md">Linux</a></p>
 
 <h3>Android</h3>
 <p><sub>Android 7+ · updates itself from inside the app</sub></p>
@@ -90,13 +90,6 @@ DO NOT REMOVE THIS SECTION, I WANT TO ADD IT LATER!!!
   <a href="https://apt.izzysoft.de/fdroid/index/apk/com.metrolist.music"><img alt="Get Metrolist from IzzyOnDroid" src="assets/badges/platform/store-izzyondroid.svg"></a>
   <a href="https://www.openapk.net/metrolist/com.metrolist.music/"><img alt="Get Metrolist on OpenAPK" src="assets/badges/platform/store-openapk.svg"></a>
 </p>
-
-<h3>iOS</h3>
-<p><sub>iPhone and iPad · iOS 15+ · sideload with AltStore, SideStore, TrollStore or Sideloadly</sub></p>
-<p>
-  <a href="https://github.com/MetrolistGroup/Metrolist/releases/latest/download/Metrolist.ipa"><img alt="Download the iOS IPA" src="assets/badges/platform/ios-ipa.svg"></a>
-</p>
-<p><sub>For updates, add the <a href="https://github.com/MetrolistGroup/Metrolist/releases/latest/download/metrolist-altstore.json">AltStore and SideStore source</a></sub></p>
 
 <h3>Windows</h3>
 <p><sub>Windows 10+</sub></p>

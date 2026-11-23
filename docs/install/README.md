@@ -1,6 +1,6 @@
 # Install Metrolist KMP
 
-Choose your platform: [Android](android.md), [iOS and iPadOS](ios.md), [Windows](windows.md), [macOS](macos.md), or [Linux](linux.md).
+Choose your platform: [Android](android.md), [Windows](windows.md), [macOS](macos.md), or [Linux](linux.md).
 
 ## Get the package
 
@@ -11,7 +11,6 @@ The [release workflow](../../.github/workflows/release.yml) defines these packag
 | Platform | Release asset |
 | --- | --- |
 | Android | `Metrolist.apk` |
-| iOS | `Metrolist.ipa` |
 | Windows x64 | `Metrolist-Desktop-windows.zip`, `metrolist-installer-windows-x64-VERSION.exe` |
 | Windows ARM64 | `metrolist-desktop-windows-arm64-VERSION.zip` |
 | macOS | `metrolist-desktop-macos-arm64-VERSION.dmg`, `metrolist-desktop-macos-x64-VERSION.dmg` |
@@ -50,7 +49,7 @@ Compare all 64 hexadecimal characters with the matching entry in the checksum fi
 
 A mismatch means you should download the file again. Do not install a mismatched file. If the publisher supplies no checksum, you cannot perform this comparison. A checksum confirms that the file matches the publisher's copy; it is not a code-signing certificate.
 
-For Android or iOS, you can verify the APK or IPA on a computer before transferring it unchanged to the device. After installation, check the version in Metrolist's settings, open a song and confirm audible playback. Platform guides add checks for login and signing.
+For Android, you can verify the APK on a computer before transferring it unchanged to the device. After installation, check the version in Metrolist's settings, open a song and confirm audible playback. Platform guides add checks for login and signing.
 
 ## Before updating or uninstalling
 

@@ -98,10 +98,6 @@ import com.metrolist.shared.constants.HideNonMusicalVideosKey
 import com.metrolist.shared.constants.HideRecentSearchesKey
 import com.metrolist.shared.constants.HideShortSongsKey
 import com.metrolist.shared.constants.HistoryPlaylistsEnabledKey
-import com.metrolist.shared.constants.IosCustomFontFileKey
-import com.metrolist.shared.constants.IosCustomFontNameKey
-import com.metrolist.shared.constants.IosCustomFontRevisionKey
-import com.metrolist.shared.constants.IosOnboardingCompleteKey
 import com.metrolist.shared.constants.KeepDownloadedPlaylistsJsonKey
 import com.metrolist.shared.constants.KeepPausedOnSongChangeKey
 import com.metrolist.shared.constants.KnownUploadIdsJsonKey
@@ -342,9 +338,6 @@ class Settings(
     var androidCustomFontFile by preference(AndroidCustomFontFileKey, "")
     var androidCustomFontName by preference(AndroidCustomFontNameKey, "")
     var androidActiveFontId by preference(AndroidActiveFontIdKey, "")
-    var iosCustomFontFile by preference(IosCustomFontFileKey, "")
-    var iosCustomFontName by preference(IosCustomFontNameKey, "")
-    var iosCustomFontRevision by preference(IosCustomFontRevisionKey, 0L)
     var animatedGradient by preference(true)
     var appIcon by preference(AppIconKey, "ORIGINAL")
     var enableHapticFeedback by preference(EnableHapticFeedbackKey, true)
@@ -945,7 +938,6 @@ class Settings(
     var desktopOnboardingComplete by preference(false)
     var desktopOnboardingInitialized by preference(false)
     var desktopPendingOnboardingSentryConsent by preference("")
-    var iosOnboardingComplete by preference(IosOnboardingCompleteKey, false)
     var sidebarNavItems by preference(
         listOf(
             NavItem(NavigationId.HOME),
@@ -1379,12 +1371,8 @@ class Settings(
                     "desktopOnboardingComplete",
                     "desktopOnboardingInitialized",
                     "desktopPendingOnboardingSentryConsent",
-                    IosOnboardingCompleteKey,
                     SentryEnabledKey,
-                    IosCustomFontFileKey,
                     CollectionCoversKey,
-                    IosCustomFontNameKey,
-                    IosCustomFontRevisionKey,
                     "deviceConnectEnabled",
                     DeviceConnectExperimentalEnabledKey,
                     "deviceConnectDeviceId",

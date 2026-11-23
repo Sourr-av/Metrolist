@@ -7,9 +7,6 @@ outputs:
   desktop:
     description: Verify desktop and shared JVM code
     value: ${{ steps.paths.outputs.desktop }}
-  ios:
-    description: Verify iOS on macOS
-    value: ${{ steps.paths.outputs.ios }}
   repository:
     description: Verify repository scripts and catalogs
     value: ${{ steps.paths.outputs.repository }}

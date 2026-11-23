@@ -1,6 +1,6 @@
 # Contributing to Metrolist
 
-To install the app, use the [installation guides](install/README.md): [Android](install/android.md), [iOS](install/ios.md), [Windows](install/windows.md), [macOS](install/macos.md) and [Linux](install/linux.md).
+To install the app, use the [installation guides](install/README.md): [Android](install/android.md), [Windows](install/windows.md), [macOS](install/macos.md) and [Linux](install/linux.md).
 
 Start with [development.md](development.md) to build the app and find the code for your change. Then run the relevant [checks](checks.md). Read [strings.md](strings.md) when adding UI text or changing translations.
 
@@ -25,7 +25,6 @@ Read these when working on the corresponding feature. They are not prerequisites
 | Shared rooms, codecs and invitation links | [Listen Together](listen-together.md) |
 | Playback failures and automatic error skipping | [Playback errors](playback.md) |
 | Audio processing and equalizer profiles | [Audio processing](audio-processing.md) |
-| iOS Opus playback | [iOS Opus](ios-opus.md) |
 
 ## Release and CI
 

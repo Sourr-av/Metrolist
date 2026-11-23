@@ -1,6 +1,6 @@
 # Agent guide
 
-Metrolist is a YouTube Music client for Android, desktop and iOS.
+Metrolist is a YouTube Music client for Android and desktop.
 
 ## One task per PR
 
@@ -72,7 +72,6 @@ Explain this policy and ask for a maintainer decision before coding a rejected f
 | --- | --- |
 | `androidApp` | Android UI, lifecycle and playback integration. |
 | `desktopApp` | Desktop UI and application integration. Kotlin is in `src/jvmMain/kotlin/`; resources belong in `src/desktopMain/resources/`. |
-| `iosApp` | Swift/Xcode host. Shared iOS Kotlin is in `shared/src/iosMain/`. |
 | `shared` | Reusable logic and UI in `commonMain`, JVM HTTP/SABR in `jvmSharedMain`, desktop FFmpeg in `desktopMain`. |
 | `listenTogetherProto` | JVM protobuf generation. Models and codecs live in `shared`. |
 | `metroproto` | Upstream protobuf schema submodule. Do not modify it here. |

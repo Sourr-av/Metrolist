@@ -2,9 +2,9 @@
 
 ## CI path selection
 
-[CI](../.github/workflows/ci.yml) uses one Linux selection job and runs cheap repository checks there. Docs-only changes need no build runner. Common production sources and Compose resources select Android, desktop x64 and iOS. Common tests and JVM shared sources select Android and desktop. Platform source sets select their platform. Global build inputs and unreadable diffs select every platform. Deleted paths and both sides of renames count. See [CI path selection](checks.md#ci-path-selection) for job counts and manual packaging commands.
+[CI](../.github/workflows/ci.yml) uses one Linux selection job and runs cheap repository checks there. Docs-only changes need no build runner. Common production sources, Compose resources, common tests and JVM shared sources select Android and desktop x64. Platform source sets select their platform. Global build inputs and unreadable diffs select every platform. Deleted paths and both sides of renames count. See [CI path selection](checks.md#ci-path-selection) for job counts and manual packaging commands.
 
-Main pushes run the affected platform's ktlint and unit tests. Nightly supplies the APK and native desktop builds, so CI skips debug APK assembly and its separate desktop compile task on push. Tests still compile their dependencies. ARM64 verification, other desktop packaging and launch probes stay manual. iOS targets need Apple SDKs and run only on macOS.
+Main pushes run the affected platform's ktlint and unit tests. Nightly supplies the APK and native desktop builds, so CI skips debug APK assembly and its separate desktop compile task on push. Tests still compile their dependencies. ARM64 verification, other desktop packaging and launch probes stay manual.
 
 ## Release verification gate
 
@@ -16,7 +16,6 @@ Release callers pass `run-verification: false` only after the gate passes. `-Pme
 | --- | --- |
 | Desktop JVM tests and Windows login-completion tests | Linux desktop verification and manual Windows packages |
 | Packaged launch smoke tests | Manual Linux, Windows and macOS packages |
-| iOS simulator backend tests | iOS verification and manual IPA builds |
 | Windows manager tests and payload installation | `build-desktop.yml` with `windows-manager=true` |
 | Shared JAR integrity checks | Linux verification; manual packaging also checks final distributables |
 
@@ -28,7 +27,7 @@ Pull requests restore caches without saving them.
 
 Room's schema argument is an `InputDirectory` with relative path sensitivity, following the [Room schema export example](https://developer.android.com/training/data-storage/room/migrating-db-versions#export-schemas), so KSP does not treat the checkout's absolute path as an input. Compare every file under `shared/schemas` after generation. Android string catalogs and shared Compose accessors are cacheable Gradle tasks.
 
-Gradle setup restores dependencies and the local task cache, including the Windows FFmpeg and WebView outputs. Configuration-cache keys include the runner, cache scope, a configuration fingerprint and the commit SHA; restores fall back only within the same fingerprint. Credential-bearing jobs never persist the configuration cache, and release packaging runs with `--no-configuration-cache`. Kotlin/Native keeps separate test and package caches keyed by OS, architecture, Kotlin, Xcode and a dependency fingerprint. Fallback restores keep the full OS, architecture, Kotlin, Xcode and task-graph prefix. NuGet keys use the SDK configuration and project dependencies; compiled helper outputs are not cached. Linux WebView keys use the actual distribution and native library versions.
+Gradle setup restores dependencies and the local task cache, including the Windows FFmpeg and WebView outputs. Configuration-cache keys include the runner, cache scope, a configuration fingerprint and the commit SHA; restores fall back only within the same fingerprint. Credential-bearing jobs never persist the configuration cache, and release packaging runs with `--no-configuration-cache`. NuGet keys use the SDK configuration and project dependencies; compiled helper outputs are not cached. Linux WebView keys use the actual distribution and native library versions.
 
 Compose disables jlink caching because it does not declare the JDK tools as inputs. The runtime task fingerprints the full packaging JDK with relative paths, OS and host architecture, plus Compose's module and option inputs and the CDS JVM flags, so the linked runtime and base CDS archive can use the task cache. Verification builds use an empty source revision to avoid rebuilding on every commit; published binaries carry the real revision. Do not substitute timestamps or credentials to get cache hits.
 
@@ -36,7 +35,7 @@ Compose disables jlink caching because it does not declare the JDK tools as inpu
 
 ## Runners
 
-Android release packaging uses 8 vCPUs for compilation and R8; debug verification uses 4. Linux packaging uses 4 vCPUs on x64 and 8 on ARM64. Windows x64 packaging uses 4. Windows ARM64 packages natively on GitHub's `windows-11-arm` runner; the `WINDOWS_ARM64_RUNNER` repository variable selects a larger native runner. macOS packaging and iOS use 6, with bounded iOS workers. iOS release links the device framework in its own step before Xcode packaging; the simulator and device frameworks target different architectures and cannot share a link.
+Android release packaging uses 8 vCPUs for compilation and R8; debug verification uses 4. Linux packaging uses 4 vCPUs on x64 and 8 on ARM64. Windows x64 packaging uses 4. Windows ARM64 packages natively on GitHub's `windows-11-arm` runner; the `WINDOWS_ARM64_RUNNER` repository variable selects a larger native runner. macOS packaging uses 6.
 
 ## Native Image opt-in runners
 
@@ -65,5 +64,3 @@ The build pins Kotlin and the Compose compiler to 2.4.21. Kotlin 2.5 [disables](
 `gradle.properties` does not set the internal property because KGP reports its use. Do not disable `kotlin.internal.jvm.enableKmpClasspathMetadataForIncrementalCompilation`; [Kotlin PR 7638](https://github.com/JetBrains/kotlin/pull/7638) explains why common fragments need that metadata. Fresh CI checkouts compile non-incrementally. Clean `:shared` if a local build misbehaves after changing an expect/actual pair.
 
 Room 3 requires KSP with Kotlin code generation ([Room 3 release notes](https://developer.android.com/jetpack/androidx/releases/room3#3.0.3)). [KSP2](https://github.com/google/ksp/blob/2.3.14/docs/ksp2.md) runs separately from the Kotlin compiler. Room KSP runs only in shared production source sets; `androidApp` does not apply KSP.
-
-Kotlin's [release-cache options](https://kotlinlang.org/docs/native-improving-compilation-time.html#enable-caches-for-release-binaries) trade some compiler optimizations for build speed.

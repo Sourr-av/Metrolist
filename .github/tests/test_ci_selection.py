@@ -24,24 +24,22 @@ class PathSelectionTest(unittest.TestCase):
             "shared/src/commonMain/kotlin/Player.kt", "shared/src/commonTest/kotlin/Test.kt",
             "shared/src/commonMain/composeResources/values-pl/strings.xml", "docs/checks.md",
         ])
-        self.assertEqual(result, {"android": True, "desktop": True, "ios": True, "repository": True, "shared-only": True})
+        self.assertEqual(result, {"android": True, "desktop": True, "repository": True, "shared-only": True})
 
     def test_platform_sources_and_workflows_select_only_their_platform(self):
         for key, paths in {
             "android": ["androidApp/src/Test.kt", "shared/src/androidMain/Test.kt", ".github/workflows/reusable-android-build.yml"],
             "desktop": ["desktopApp/src/Test.kt", "shared/src/desktopMain/Test.kt", ".github/workflows/reusable-desktop-windows.yml"],
-            "ios": ["iosApp/Test.swift", "shared/src/iosMain/Test.kt", ".github/workflows/reusable-ios-build.yml"],
         }.items():
             for path in paths:
                 with self.subTest(path=path):
                     result = ci_paths.classify([path])
-                    self.assertEqual([p for p in ("android", "desktop", "ios") if result[p]], [key])
+                    self.assertEqual([p for p in ("android", "desktop") if result[p]], [key])
                     self.assertFalse(result["shared-only"])
 
     def test_shared_jvm_sources_cover_both_jvm_platforms(self):
         result = ci_paths.classify(["shared/src/jvmSharedMain/Http.kt"])
         self.assertTrue(result["android"] and result["desktop"])
-        self.assertFalse(result["ios"])
 
     def test_global_inputs_and_unknown_paths_select_every_platform(self):
         for path in ("gradlew", "gradlew.bat", "gradle.properties", "gradle/libs.versions.toml", "shared/build.gradle.kts",
@@ -63,7 +61,8 @@ class PathSelectionTest(unittest.TestCase):
             result = subprocess.run([sys.executable, str(ROOT / ".github/scripts/ci_paths.py"), "--base", "missing"],
                                     capture_output=True, env={**os.environ, "GITHUB_OUTPUT": str(output)})
             self.assertEqual(result.returncode, 0)
-            self.assertIn("ios=true", output.read_text())
+            self.assertIn("android=true", output.read_text())
+            self.assertIn("desktop=true", output.read_text())
 
     def test_automatic_runs_have_one_desktop_matrix_entry(self):
         text = (ROOT / ".github/workflows/reusable-desktop-verify.yml").read_text()
@@ -83,11 +82,11 @@ class CIWorkflowTest(unittest.TestCase):
         jobs = dict(re.findall(r"(?ms)^  ([\w-]+):\n(.*?)(?=^  [\w-]+:|\Z)", workflow.split("jobs:\n", 1)[1]))
         for paths, expected in (
             (["docs/checks.md", "README.md"], {"changes"}),
-            (["shared/src/commonMain/kotlin/Player.kt"], {"changes", "android", "desktop", "ios"}),
+            (["shared/src/commonMain/kotlin/Player.kt"], {"changes", "android", "desktop"}),
             (["androidApp/src/main/Player.kt"], {"changes", "android"}),
             (["desktopApp/src/jvmMain/Player.kt"], {"changes", "desktop"}),
             (["packaging/flatpak/manifest.json.in", "aur/PKGBUILD"], {"changes"}),
-            (["gradle/libs.versions.toml"], {"changes", "android", "desktop", "ios"}),
+            (["gradle/libs.versions.toml"], {"changes", "android", "desktop"}),
         ):
             selected = ci_paths.classify(paths)
             scheduled = set()
@@ -221,7 +220,7 @@ class ReleaseGateTest(unittest.TestCase):
 
     def test_caches_keep_credentials_out_and_pull_requests_read_only(self):
         workflows = ROOT / ".github/workflows"
-        for name in ("android-build", "desktop-linux", "desktop-macos", "desktop-windows", "ios-build"):
+        for name in ("android-build", "desktop-linux", "desktop-macos", "desktop-windows"):
             text = (workflows / f"reusable-{name}.yml").read_text()
             self.assertIn("persist-configuration-cache: 'false'", text)
             self.assertIn("cache-read-only: ${{ inputs.cache-read-only }}", text)
@@ -286,7 +285,7 @@ class ReleaseGateTest(unittest.TestCase):
                 selector = subprocess.run([sys.executable, str(ROOT / ".github/scripts/ci_paths.py"), "--base", source, "--head", head], capture_output=True, text=True)
                 self.assertEqual(selector.returncode, 0)
                 self.assertIn("android=false", selector.stdout)
-                self.assertIn("ios=false", selector.stdout)
+                self.assertIn("desktop=false", selector.stdout)
                 (root / "gradle.properties").write_text("appVersion=1.0.1\norg.gradle.caching=false\n")
                 config = commit("build configuration")
                 self.assertFalse(release.metadata_only(head, config))
@@ -334,9 +333,9 @@ class ReleaseGateTest(unittest.TestCase):
             text = (ROOT / ".github/workflows" / workflow).read_text()
             self.assertIn("run: python3 .github/scripts/release_verification.py", text)
             self.assertIn("checks: read", text)
-            self.assertEqual(text.count("run-verification: false"), 6 if workflow == "release.yml" else 5)
+            self.assertEqual(text.count("run-verification: false"), 5)
             self.assertIn("fetch-depth: 0", text)
-        for name in ("android-build", "desktop-linux", "desktop-macos", "desktop-windows", "ios-build"):
+        for name in ("android-build", "desktop-linux", "desktop-macos", "desktop-windows"):
             text = (ROOT / f".github/workflows/reusable-{name}.yml").read_text()
             self.assertIn("      run-verification:", text)
             self.assertIn("default: true", text.split("run-verification:", 1)[1].split("type:", 1)[0])

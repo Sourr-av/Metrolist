@@ -24,7 +24,7 @@ class BackupFormatTest {
     fun validationFailuresKeepDistinctReasonsForLocalizedRestoreMessages() {
         assertEquals(
             BackupValidationFailure.UNSUPPORTED_FORMAT,
-            assertFailsWith<BackupValidationException> { BackupManifest(999, BackupPlatform.IOS).requireSupportedFormat() }.reason,
+            assertFailsWith<BackupValidationException> { BackupManifest(999, BackupPlatform.DESKTOP).requireSupportedFormat() }.reason,
         )
         assertEquals(
             BackupValidationFailure.UNSUPPORTED_DATABASE,
@@ -43,7 +43,6 @@ class BackupFormatTest {
     fun currentAndOlderFormatsAreSupported() {
         BackupManifest(1, BackupPlatform.ANDROID).requireSupportedFormat()
         BackupManifest(BackupManifest.CURRENT_FORMAT_VERSION, BackupPlatform.DESKTOP).requireSupportedFormat()
-        BackupManifest(BackupManifest.CURRENT_FORMAT_VERSION, BackupPlatform.IOS).requireSupportedFormat()
     }
 
     @Test

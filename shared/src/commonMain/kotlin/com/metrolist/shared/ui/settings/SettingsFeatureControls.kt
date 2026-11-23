@@ -109,7 +109,6 @@ internal fun CanvasContentOrderSetting(
             when (platform) {
                 SettingsPlatform.ANDROID -> true
                 SettingsPlatform.DESKTOP -> it != CanvasContentSource.YOUTUBE_MUSIC_VIDEO
-                SettingsPlatform.IOS -> it == CanvasContentSource.APPLE_MUSIC
             }
         }
     val enabledSources = CanvasContentSource.parseEnabled(settings.canvasEnabledSources)

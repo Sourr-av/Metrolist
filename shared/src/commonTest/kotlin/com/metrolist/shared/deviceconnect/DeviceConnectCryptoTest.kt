@@ -660,7 +660,6 @@ class DeviceConnectCryptoTest {
                 DeviceConnectDeviceType.DESKTOP to "desktop",
                 DeviceConnectDeviceType.ANDROID_AUTO to "android_auto",
                 DeviceConnectDeviceType.WEAR_OS to "wear_os",
-                DeviceConnectDeviceType.IOS to "ios",
                 DeviceConnectDeviceType.UNKNOWN to "unknown",
             )
 

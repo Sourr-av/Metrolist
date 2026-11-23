@@ -1,42 +1,10 @@
 package com.metrolist.shared.playback
 
-import com.metrolist.innertubex.sabr.ExperimentalSabrApi
-import com.metrolist.innertubex.sabr.SabrAudioStream
 import com.metrolist.innertubex.sabr.SabrChunk
-import com.metrolist.innertubex.sabr.SabrResponseDiagnostics
-import com.metrolist.shared.youtube.playback.PlaybackResource
-import io.ktor.client.HttpClient
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
-
-@OptIn(ExperimentalSabrApi::class)
-internal suspend fun fetchSabrAudio(
-    client: HttpClient,
-    resource: PlaybackResource,
-    maxBytes: Long,
-    onResponse: ((SabrResponseDiagnostics) -> Unit)? = null,
-    write: suspend (Long, ByteArray, Int) -> Unit,
-): Long {
-    val bootstrap = requireNotNull(resource.sabrBootstrap)
-    return withTimeoutOrNull(IOS_SABR_PREPARATION_TIMEOUT_MS) {
-        collectSabrAudio(
-            SabrAudioStream(
-                client,
-                bootstrap,
-                maxRequestsWithoutProgress = 2,
-                tokenSupplier = resource.sabrTokenSupplier,
-                onResponse = onResponse,
-            ).chunks(),
-            bootstrap.contentLengthBytes ?: resource.contentLengthBytes,
-            maxBytes,
-            expectedDurationMs = bootstrap.durationMs,
-            write = write,
-        )
-    } ?: throw IncompleteAudioDownloadException("SABR audio preparation timed out")
-}
 
 internal suspend fun collectSabrAudio(
     chunks: Flow<SabrChunk>,

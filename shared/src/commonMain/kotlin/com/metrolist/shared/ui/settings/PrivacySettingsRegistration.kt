@@ -116,26 +116,8 @@ internal fun SettingsUiRegistryBuilder.registerPrivacySettings(host: SharedSetti
             if (host.platform != SettingsPlatform.DESKTOP) {
                 switch(
                     id = "blockScreenshots",
-                    title =
-                        stringResource(
-                            if (host.platform ==
-                                SettingsPlatform.IOS
-                            ) {
-                                Res.string.ios_screen_privacy
-                            } else {
-                                Res.string.block_screenshots
-                            },
-                        ),
-                    description =
-                        stringResource(
-                            if (host.platform ==
-                                SettingsPlatform.IOS
-                            ) {
-                                Res.string.ios_screen_privacy_description
-                            } else {
-                                Res.string.block_screenshots_desc
-                            },
-                        ),
+                    title = stringResource(Res.string.block_screenshots),
+                    description = stringResource(Res.string.block_screenshots_desc),
                     checked = settings.blockScreenshots,
                 ) { settings.blockScreenshots = it }
             }

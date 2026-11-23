@@ -623,23 +623,21 @@ internal fun SettingsUiRegistryBuilder.registerAppearanceSettings(host: SharedSe
             tone = SettingsTone.ROSE,
         ) {
             group("layout", stringResource(Res.string.layout)) {
-                if (host.platform != SettingsPlatform.IOS) {
-                    switch(
-                        id = "showPlayerCastButton",
-                        title = stringResource(Res.string.show_player_cast_button),
-                        checked = settings.showPlayerCastButton,
-                        enabled = settings.castEnabled,
-                        description = stringResource(Res.string.settings_player_control_summary),
-                    ) { settings.showPlayerCastButton = it }
-                    videoPlaybackSettings(host)
-                    switch(
-                        id = "showPlayerVideoButton",
-                        title = stringResource(Res.string.show_player_video_button),
-                        checked = settings.showPlayerVideoButton,
-                        enabled = settings.musicVideoPlaybackEnabled,
-                        description = stringResource(Res.string.settings_player_control_summary),
-                    ) { settings.showPlayerVideoButton = it }
-                }
+                switch(
+                    id = "showPlayerCastButton",
+                    title = stringResource(Res.string.show_player_cast_button),
+                    checked = settings.showPlayerCastButton,
+                    enabled = settings.castEnabled,
+                    description = stringResource(Res.string.settings_player_control_summary),
+                ) { settings.showPlayerCastButton = it }
+                videoPlaybackSettings(host)
+                switch(
+                    id = "showPlayerVideoButton",
+                    title = stringResource(Res.string.show_player_video_button),
+                    checked = settings.showPlayerVideoButton,
+                    enabled = settings.musicVideoPlaybackEnabled,
+                    description = stringResource(Res.string.settings_player_control_summary),
+                ) { settings.showPlayerVideoButton = it }
 
                 if (host.platform != SettingsPlatform.DESKTOP) {
                     choice(
@@ -800,29 +798,27 @@ internal fun SettingsUiRegistryBuilder.registerAppearanceSettings(host: SharedSe
                     CanvasContentOrderSetting(host.platform, canvasEnabled, settings.enableAnimatedCovers)
                 }
             }
-            if (host.platform != SettingsPlatform.IOS) {
-                group("artistArtwork", stringResource(Res.string.settings_artist_sources)) {
-                    switch(
-                        id = "appleMusicArtistImages",
-                        title = stringResource(Res.string.apple_music_artist_images_title),
-                        description = stringResource(Res.string.apple_music_artist_images_description),
-                        checked = settings.enableAppleMusicArtistImages,
-                    ) { settings.enableAppleMusicArtistImages = it }
-                    switch(
-                        id = "appleMusicArtistVideos",
-                        title = stringResource(Res.string.apple_music_artist_videos_title),
-                        description = stringResource(Res.string.apple_music_artist_videos_description),
-                        checked = settings.enableAppleMusicArtistVideos,
-                    ) { settings.enableAppleMusicArtistVideos = it }
-                    choice(
-                        id = "appleMusicArtistVideoResolution",
-                        title = stringResource(Res.string.apple_music_artist_video_quality_title),
-                        description = stringResource(Res.string.apple_music_artist_video_quality_description),
-                        valueLabel = resolutionChoices.first { it.id == settings.appleMusicArtistVideoResolution.name }.label,
-                        choices = resolutionChoices,
-                        selectedChoiceId = settings.appleMusicArtistVideoResolution.name,
-                    ) { settings.appleMusicArtistVideoResolution = AnimatedCoverResolution.valueOf(it) }
-                }
+            group("artistArtwork", stringResource(Res.string.settings_artist_sources)) {
+                switch(
+                    id = "appleMusicArtistImages",
+                    title = stringResource(Res.string.apple_music_artist_images_title),
+                    description = stringResource(Res.string.apple_music_artist_images_description),
+                    checked = settings.enableAppleMusicArtistImages,
+                ) { settings.enableAppleMusicArtistImages = it }
+                switch(
+                    id = "appleMusicArtistVideos",
+                    title = stringResource(Res.string.apple_music_artist_videos_title),
+                    description = stringResource(Res.string.apple_music_artist_videos_description),
+                    checked = settings.enableAppleMusicArtistVideos,
+                ) { settings.enableAppleMusicArtistVideos = it }
+                choice(
+                    id = "appleMusicArtistVideoResolution",
+                    title = stringResource(Res.string.apple_music_artist_video_quality_title),
+                    description = stringResource(Res.string.apple_music_artist_video_quality_description),
+                    valueLabel = resolutionChoices.first { it.id == settings.appleMusicArtistVideoResolution.name }.label,
+                    choices = resolutionChoices,
+                    selectedChoiceId = settings.appleMusicArtistVideoResolution.name,
+                ) { settings.appleMusicArtistVideoResolution = AnimatedCoverResolution.valueOf(it) }
             }
             if (host.platform == SettingsPlatform.ANDROID) {
                 group(

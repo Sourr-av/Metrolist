@@ -6,9 +6,9 @@ Use Eclipse Temurin 25, including for the IDE's Gradle JVM. The build requires t
 
 JVM tests and desktop launchers enable native access for Skiko, JNA, SQLite and Conscrypt. They allow the Unsafe memory access that protobuf and DataStore use on Java 25.
 
-`gradle.properties` caps the Gradle daemon at 4 GB of heap and 1 GB of metaspace, runs Kotlin in that daemon, limits builds to 4 parallel workers and stops idle daemons after 30 minutes. Android lint and Kotlin/Native compilation also run inside the daemon, so a full Android, desktop and iOS check with more workers or less heap can fail with `GC overhead limit exceeded` even when the machine has free memory. Override these values in `~/.gradle/gradle.properties` instead of editing the shared file. If combined checks exhaust the heap, increase `org.gradle.jvmargs` for that invocation and use `--no-parallel`.
+`gradle.properties` caps the Gradle daemon at 4 GB of heap and 1 GB of metaspace, runs Kotlin in that daemon, limits builds to 4 parallel workers and stops idle daemons after 30 minutes. Android lint also runs inside the daemon, so a full Android and desktop check with more workers or less heap can fail with `GC overhead limit exceeded` even when the machine has free memory. Override these values in `~/.gradle/gradle.properties` instead of editing the shared file. If combined checks exhaust the heap, increase `org.gradle.jvmargs` for that invocation and use `--no-parallel`.
 
-Kotlin and the Compose compiler share the catalog's `kotlin` version. Common-source edits may compile non-incrementally, and fresh CI checkouts always do. KLIB cross compilation is disabled because the iOS cinterop requires Apple SDKs; build iOS targets on macOS. If a local build misbehaves after changing an expect/actual pair, clean `:shared`. Read [build-performance.md](build-performance.md) before changing compiler or heap settings. A no-op build does not measure performance after a source edit.
+Kotlin and the Compose compiler share the catalog's `kotlin` version. Common-source edits may compile non-incrementally, and fresh CI checkouts always do. If a local build misbehaves after changing an expect/actual pair, clean `:shared`. Read [build-performance.md](build-performance.md) before changing compiler or heap settings. A no-op build does not measure performance after a source edit.
 
 To diagnose a slow build, add `--profile --no-scan -Pkotlin.build.report.output=file` to collect task times and Kotlin rebuild reasons. Compare an unchanged second invocation with an edit to common sources, and note the command, RAM, whether it followed a clean or a source edit, and which file changed.
 
@@ -45,25 +45,9 @@ Debug APKs include unshrunk code and debugging dependencies, so compare release 
 
 The second command runs desktop checks but not shared tests. Linux login needs system WebKitGTK libraries. Audio decoding uses the bundled FFmpeg libraries. See [desktop.md](desktop.md) for platform prerequisites, packaging and troubleshooting.
 
-### iOS
-
-Use macOS with Xcode, its command-line tools and an installed iOS Simulator runtime. Boot a simulator before using `--run`.
-
-```bash
-./scripts/build_ios.sh --sim --run
-```
-
-The script builds the shared Kotlin framework through the Xcode project and copies the simulator app to `dist/Metrolist.app`. Open `iosApp/iosApp.xcodeproj` to debug the Swift host or configure signing. Direct Xcode builds and the script both derive bundle version metadata from `appVersion` through `scripts/ios_version.sh`.
-
-```bash
-./scripts/build_ios.sh --ipa
-```
-
-This produces an unsigned `dist/Metrolist.ipa`. It needs signing or a sideloading tool before device installation. Linux can compile shared iOS sources but cannot build or run the Xcode app.
-
 ## Find the code for a change
 
-See [AGENTS.md](../AGENTS.md#modules) for modules and source sets. Put reusable logic in `shared`; keep platform APIs and native lifecycle handling in their platform source sets. Desktop Kotlin is under `desktopApp/src/jvmMain/kotlin/`, but its resources belong in `desktopApp/src/desktopMain/resources/`. The iOS Swift host is under `iosApp/`; its shared Compose entry point is `shared/src/iosMain/kotlin/com/metrolist/shared/MainViewController.kt`.
+See [AGENTS.md](../AGENTS.md#modules) for modules and source sets. Put reusable logic in `shared`; keep platform APIs and native lifecycle handling in their platform source sets. Desktop Kotlin is under `desktopApp/src/jvmMain/kotlin/`, but its resources belong in `desktopApp/src/desktopMain/resources/`.
 
 | Change | Start here |
 | --- | --- |
@@ -72,7 +56,7 @@ See [AGENTS.md](../AGENTS.md#modules) for modules and source sets. Put reusable 
 | YouTube requests and parsing | `shared/src/commonMain/kotlin/com/metrolist/shared/api/YouTubeRepository.kt` and the adjacent API operations; stream extraction is under `shared/.../youtube/` |
 | Database entities and queries | `shared/src/commonMain/kotlin/com/metrolist/shared/db/`, starting with `MusicDatabase.kt` |
 | Preferences | `shared/.../constants/PreferenceKeys.kt` and `shared/.../settings/Settings.kt` |
-| Playback | Shared `ui/playback/PlaybackController.kt`, Android `playback/PlayerConnection.kt`, desktop `state/playback/`, and shared `iosMain/.../playback/` |
+| Playback | Shared `ui/playback/PlaybackController.kt`, Android `playback/PlayerConnection.kt`, and desktop `state/playback/` |
 | Casting | `shared/src/jvmSharedMain/kotlin/com/metrolist/shared/cast/` |
 
 For example, Android's `ui/screens/HomeScreen.kt` uses the Android `HomeViewModel`, which wraps the shared `HomeViewModel`. The shared class loads API data through `YouTubeRepository` and reads local state through `MusicDatabase`. Follow a screen's imports rather than assuming every platform uses the same wrapper. Koin registrations are in the platform `di/` directories and shared `youtube/di/SharedModule.kt`.
@@ -169,12 +153,6 @@ The shared full player, Android desktop-mode bar and desktop fullscreen-video co
 
 Android video preload promotion updates video mode before publishing the new song, including manual Next, end of file and crossfade. Queue and recovery resources keep the audio-to-video counterpart map, so switching back to Song uses the matching audio timestamp.
 
-### iOS playback
-
-iOS playback uses AVPlayer time observers and KVO for readiness, rate, buffering and output-volume changes. Progress samples run every 100 ms of media time while the mobile UI is resumed and every second otherwise; paused or stalled players need no polling loop. Media-time boundaries trigger preparation, silence skips, crossfade entry and corrected endings independently of that cadence. Only active gain ramps get fine updates (20 ms for crossfade, 100 ms for end-of-song sleep fades), without publishing progress to the UI. Volume and sleep-timer gain changes read the native position to keep crossfade progress between samples. Sync, seeks and persistence read the native position on demand. The `playbackObservation` cinterop protocol exposes the Objective-C KVO callback to Kotlin; observers belong to each player or item and are removed on replacement or release.
-
-iOS screen privacy covers app content while the app is inactive and during screen recording or mirroring. It cannot prevent ordinary screenshots.
-
 ## Queue
 
 Queue rows show the title, artist and duration without source subtitles. Source metadata still controls recommendations, auto-mix and the suggested section. Rows fill missing durations from the song database, including Cache, Downloaded and incomplete restored or transferred queues; known incoming durations take precedence.
@@ -185,7 +163,7 @@ Legacy shuffle is on by default. It puts the current occurrence first and random
 
 Playlist and album **Shuffle** actions put a random song first and shuffle every other occurrence into the upcoming queue, including through Device Connect. With **Persistent shuffle**, selecting a song in a new queue keeps shuffle active and starts that occurrence; Android Auto follows the same policy.
 
-Tapping a search result inside a playlist, album or stored collection queues the whole collection in its current sort order and starts at that occurrence. Search only filters visible rows; Downloaded-playlist filters still limit the collection. Album Play all, Shuffle, selection controls and album menus use the same initialization as tapping an album track. On iOS, album queues keep a radio seed so playback can continue into recommendations. Android built-in collections, including Downloaded, start finite queues; with automatic loading off, playback stays within the collection.
+Tapping a search result inside a playlist, album or stored collection queues the whole collection in its current sort order and starts at that occurrence. Search only filters visible rows; Downloaded-playlist filters still limit the collection. Album Play all, Shuffle, selection controls and album menus use the same initialization as tapping an album track. Android built-in collections, including Downloaded, start finite queues; with automatic loading off, playback stays within the collection.
 
 **Keep paused when changing songs** is off by default. When on, local skips and selections keep an existing pause; a first song still plays. End-of-track transitions, Cast and remote commands are unaffected.
 
@@ -199,7 +177,7 @@ Android and desktop **Add to queue** and **Play next** respect **Prevent duplica
 
 Dragging a selected queue or playlist row moves all selected occurrences together in order. Playlist reorder mode keeps the selection. Playlist database and YouTube edits commit the final order at drag end; queue edits keep the current playing occurrence. On TV, menu moves scroll to the moved occurrence; other platforms keep the viewport fixed.
 
-**Pause when media is muted** (Android and iOS) responds only to an unmuted-to-muted media-volume transition during playback. Starting or resuming at zero volume keeps playing. Unmuting resumes playback this setting paused; disabling the setting cancels that pending resume. Desktop does not implement it.
+**Pause when media is muted** (Android) responds only to an unmuted-to-muted media-volume transition during playback. Starting or resuming at zero volume keeps playing. Unmuting resumes playback this setting paused; disabling the setting cancels that pending resume. Desktop does not implement it.
 
 ## Android Auto and system controls
 

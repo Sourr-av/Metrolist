@@ -25,7 +25,6 @@ import androidx.compose.ui.unit.dp
 enum class SettingsPlatform {
     ANDROID,
     DESKTOP,
-    IOS,
 }
 
 enum class SettingsPageId {

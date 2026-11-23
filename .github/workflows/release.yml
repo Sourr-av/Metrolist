@@ -220,26 +220,6 @@ jobs:
       LYPRIO_BASE_URL: ${{ secrets.LYPRIO_BASE_URL }}
       LYPRIO_HMAC_KEY: ${{ secrets.LYPRIO_HMAC_KEY }}
 
-  ios:
-    name: iOS
-    needs: prepare
-    uses: ./.github/workflows/reusable-ios-build.yml
-    permissions:
-      contents: read
-    with:
-      run-verification: false
-      upload-sentry: true
-      build-ipa: true
-      upload-artifact: true
-      artifact-name: release-ios
-    secrets:
-      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-      GRADLE_ENCRYPTION_KEY: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
-      LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
-      LASTFM_SECRET: ${{ secrets.LASTFM_SECRET }}
-      LYPRIO_BASE_URL: ${{ secrets.LYPRIO_BASE_URL }}
-      LYPRIO_HMAC_KEY: ${{ secrets.LYPRIO_HMAC_KEY }}
-
   windows-manager:
     name: Windows manager
     needs: [prepare, windows-native]
@@ -263,7 +243,6 @@ jobs:
       - linux-native
       - linux
       - macos
-      - ios
     runs-on: blacksmith-2vcpu-ubuntu-2604
     timeout-minutes: 15
     permissions:
@@ -276,7 +255,6 @@ jobs:
           sparse-checkout: |
             .github/scripts/parse_changelog.sh
             docs/changelog.md
-            scripts/generate_altstore_source.py
           sparse-checkout-cone-mode: false
 
       - name: Download release artifacts
@@ -304,17 +282,11 @@ jobs:
             "release-assets/metrolist-desktop-windows-arm64-${APP_VERSION}.zip"
           # Legacy v13 GMS builds only update from this asset name; the app has one variant.
           cp release-assets/Metrolist.apk release-assets/Metrolist-with-Google-Cast.apk
-          if [[ -f release-assets/Metrolist.ipa ]]; then
-            python3 scripts/generate_altstore_source.py \
-              "$GITHUB_REPOSITORY" "$APP_VERSION" release-assets/Metrolist.ipa release-assets/metrolist-altstore.json
-          fi
           expected=(
             "release-assets/Metrolist.apk"
             "release-assets/Metrolist-with-Google-Cast.apk"
             "release-assets/Metrolist-izzy.apk"
             "release-assets/Metrolist-KMP-mapping.txt"
-            "release-assets/Metrolist.ipa"
-            "release-assets/metrolist-altstore.json"
             "release-assets/Metrolist-Desktop-windows.zip"
             "release-assets/metrolist-installer-windows-x64-${APP_VERSION}.exe"
             "release-assets/metrolist-desktop-windows-arm64-${APP_VERSION}.zip"
@@ -553,7 +525,6 @@ jobs:
       - linux-native
       - linux
       - macos
-      - ios
       - publish
       - finalize-sentry
     runs-on: blacksmith-2vcpu-ubuntu-2604

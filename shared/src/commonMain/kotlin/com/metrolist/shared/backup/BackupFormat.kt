@@ -17,7 +17,7 @@ data class BackupManifest(
 }
 
 @Serializable
-enum class BackupPlatform { ANDROID, DESKTOP, IOS }
+enum class BackupPlatform { ANDROID, DESKTOP }
 
 const val BACKUP_MANIFEST_ENTRY = "backup.json"
 const val BACKUP_DATABASE_ENTRY = "song.db"

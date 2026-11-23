@@ -117,7 +117,7 @@ jobs:
           LYPRIO_BASE_URL: ${{ secrets.LYPRIO_BASE_URL }}
           LYPRIO_HMAC_KEY: ${{ secrets.LYPRIO_HMAC_KEY }}
           JAVA_TOOL_OPTIONS: -Djava.awt.headless=true
-          # The local 4 GB heap is too small for in-process Kotlin compiling desktop and iOS sources together.
+          # Give in-process Kotlin compilation enough heap on CI runners.
           GRADLE_OPTS: >-
             -Dorg.gradle.jvmargs="-XX:MaxRAMPercentage=60.0 -XX:+UseParallelGC -Dfile.encoding=UTF-8"
         run: |

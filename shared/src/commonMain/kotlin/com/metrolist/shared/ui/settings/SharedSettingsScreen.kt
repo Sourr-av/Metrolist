@@ -109,7 +109,6 @@ import com.metrolist.shared.generated.resources.*
 import com.metrolist.shared.ui.LocalIsTv
 import com.metrolist.shared.ui.components.ExpressiveSwitch
 import com.metrolist.shared.ui.components.RefreshIndicator
-import com.metrolist.shared.ui.components.SwipeBackLayout
 import com.metrolist.shared.ui.components.focusOutline
 import com.metrolist.shared.ui.components.singleLineMarquee
 import com.metrolist.shared.ui.equalizer.MetroEqScreen
@@ -333,9 +332,6 @@ internal fun SharedSettingsRegistryScreen(
                     }
                 }
             }
-            val previousContent: @Composable () -> Unit = {
-                compactContent(previousPageId, null)
-            }
             PredictiveNavigationContent(
                 targetState = selectedPageId,
                 previousState = previousPageId,
@@ -344,17 +340,7 @@ internal fun SharedSettingsRegistryScreen(
                 modifier = Modifier.fillMaxSize(),
             ) { pageId ->
                 compactStateHolder.SaveableStateProvider(pageId?.name ?: "settingsRoot") {
-                    if (pageId == null) {
-                        compactContent(null, highlightedItemId)
-                    } else {
-                        SwipeBackLayout(
-                            enabled = host.platform == SettingsPlatform.IOS,
-                            onBack = ::closePage,
-                            previousContent = previousContent,
-                        ) {
-                            compactContent(pageId, highlightedItemId)
-                        }
-                    }
+                    compactContent(pageId, highlightedItemId)
                 }
             }
         }

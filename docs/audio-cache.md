@@ -48,10 +48,6 @@ Desktop downloads stream-copy Opus to tagged Ogg Opus and AAC to tagged M4A. Oth
 
 SABR downloads and incomplete playback captures use validated transfers. Tokenless downloads renew sessions after 45 seconds of media and resume at a segment boundary. Renewal must preserve the encoded representation. Reject gaps, changed bytes and incomplete transfers; see [SABR constraints](innertube.md#sabr).
 
-iOS capture validates URLs, redirects, response ranges and lengths. Captures retain session ownership through preloads and crossfades. Cache clear prevents publication while allowing attached readers to finish. Startup removes abandoned session files.
-
-For fragmented AAC with an empty sample table, iOS clears container durations that AVFoundation would count twice. Files with samples in `moov` remain unchanged. Saved catalog duration takes precedence over an inflated file timeline. See [iOS Opus](ios-opus.md) for remux limits and offline priority.
-
 ## Animated artwork
 
 Desktop stores media in `animated_artwork_cache` under its data directory and uses the shared disk-cache wrapper. `animatedArtworkCacheSize` defaults to 2048 MiB; zero disables retention.
@@ -60,6 +56,6 @@ Finite MP4/WebM files and supported finite HLS playlists have a 32 MiB per-file 
 
 ## Verification
 
-Run affected [platform checks](checks.md#platform-checks). Use disposable storage to check cold-cache completion, seeks, crossfades, cache clear during capture, low disk space, failed migration and each download destination. On iOS, check that throttled capture does not block unrelated playback or republish after clear.
+Run affected [platform checks](checks.md#platform-checks). Use disposable storage to check cold-cache completion, seeks, crossfades, cache clear during capture, low disk space, failed migration and each download destination.
 
 On desktop, Auto download saved albums and playlists starts downloads only after saving succeeds. Albums finish loading their remaining tracks first. Playlists use complete stored membership or load all pages, and downloads continue after leaving the collection page. Unavailable and blocked songs are filtered through the normal download path.

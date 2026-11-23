@@ -18,7 +18,6 @@ enum class DeviceConnectDeviceType(
     DESKTOP("desktop"),
     ANDROID_AUTO("android_auto"),
     WEAR_OS("wear_os"),
-    IOS("ios"),
     UNKNOWN("unknown"),
     ;
 

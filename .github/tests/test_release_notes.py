@@ -113,7 +113,7 @@ class StableReleaseNotesTest(unittest.TestCase):
     def test_checks_precede_all_stable_packaging_and_leave_tester_notes_separate(self):
         workflow = (ROOT / '.github/workflows/release.yml').read_text()
         self.assertLess(workflow.index('- name: Validate release notes'), workflow.index('- name: Require prior verification'))
-        for job in ('android', 'windows-native', 'windows', 'linux-native', 'linux', 'macos', 'ios', 'windows-manager'):
+        for job in ('android', 'windows-native', 'windows', 'linux-native', 'linux', 'macos', 'windows-manager'):
             block = re.search(rf'(?ms)^  {job}:\n(.*?)(?=^  \S|\Z)', workflow)[1]
             self.assertRegex(block, r'    needs: (prepare|\[prepare, [a-z-]+\])\n')
 

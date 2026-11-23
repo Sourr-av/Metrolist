@@ -89,7 +89,7 @@ YouTube Music video canvas over SABR plays from the start only. Short-clip seeks
 
 Token callbacks keep request-local results. A canceled Kotlin caller does not cancel a WebView promise; late results cannot overwrite another request. Check this with `node --test scripts/test_page_bound_po_token.mjs`.
 
-With crash reporting enabled, `PlaybackClientStats` counts resolve outcomes per client profile and playback successes and failures by category. It stores only catalog profile IDs and counters, never video IDs. Every fifth launch Android and desktop send one Sentry log per profile and reset the counts; sum `playback.play.ok` and `playback.play.fail.*` by `playback.profile` in Sentry Logs to compare clients. iOS counts locally but does not send them yet.
+With crash reporting enabled, `PlaybackClientStats` counts resolve outcomes per client profile and playback successes and failures by category. It stores only catalog profile IDs and counters, never video IDs. Every fifth launch Android and desktop send one Sentry log per profile and reset the counts; sum `playback.play.ok` and `playback.play.fail.*` by `playback.profile` in Sentry Logs to compare clients.
 
 ## SABR
 
@@ -99,7 +99,7 @@ Playback validates overlapping ranges against emitted bytes. Identical repeats a
 
 `shareCachedDataFrom` requires an unopened replacement with the same encoded representation. Reference-counted storage is shared, but each stream owns its cursor, producer and failure state. Gaps are incomplete streams, not EOF. Normal producer completion must cover the expected duration when timestamps are available.
 
-Android closes storage off the playback thread. Video hiding must wait until the initial container probe completes. Reattachment resumes from the audio clock with seek preroll and retained bytes. See [cache transfer rules](audio-cache.md#formats), [iOS preparation](ios-opus.md#capture-limits) and [error policy](playback.md#error-policy).
+Android closes storage off the playback thread. Video hiding must wait until the initial container probe completes. Reattachment resumes from the audio clock with seek preroll and retained bytes. See [cache transfer rules](audio-cache.md#formats) and [error policy](playback.md#error-policy).
 
 ## Live stream classification
 

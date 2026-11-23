@@ -117,7 +117,7 @@ fun rememberMetrolistSettingsRegistry(
 
                     SettingsPageId.DEVTOOLS -> {
                         buildList {
-                            if (host.platform != SettingsPlatform.IOS) add(Res.string.crash_logs)
+                            add(Res.string.crash_logs)
                             addAll(
                                 listOf(
                                     Res.string.devtools_playback_client,

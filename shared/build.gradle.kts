@@ -11,14 +11,12 @@ import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 import org.gradle.api.tasks.testing.Test
-import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.gradle.jvm.tasks.Jar
 import org.gradle.jvm.toolchain.JavaLanguageVersion
 import org.gradle.jvm.toolchain.JavaToolchainService
 import org.gradle.jvm.toolchain.JvmVendorSpec
 import org.gradle.process.CommandLineArgumentProvider
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest
 import java.io.File
 import java.io.OutputStream
 import java.net.URI
@@ -298,20 +296,6 @@ kotlin {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_21)
     }
 
-    listOf(
-        iosArm64(),
-        iosSimulatorArm64(),
-    ).forEach { iosTarget ->
-        iosTarget.compilations.getByName("main").cinterops.create("playbackObservation") {
-            definitionFile.set(project.file("src/iosMain/cinterop/playbackObservation.def"))
-        }
-        iosTarget.binaries.framework {
-            baseName = "Shared"
-            isStatic = true
-            freeCompilerArgs += "-Xadd-light-debug=enable"
-        }
-    }
-
     jvmToolchain {
         languageVersion.set(JavaLanguageVersion.of(25))
         vendor.set(jdkVendor)
@@ -449,16 +433,6 @@ kotlin {
                 implementation(libs.ktor.client.cio)
             }
         }
-        getByName("iosMain") {
-            dependencies {
-                implementation("io.coil-kt.coil3:coil-network-ktor3:${libs.versions.coil.get()}") {
-                    exclude(group = "org.jetbrains.skiko", module = "skiko")
-                }
-                implementation(libs.ktor.client.darwin)
-                implementation(libs.sqlite.bundled)
-                implementation("no.synth:kmp-zip:2.1.0")
-            }
-        }
     }
 
     targets.all {
@@ -562,12 +536,7 @@ val generateBuildConfig =
                 .gradleProperty("metrolist.debug")
                 .orNull
                 ?.toBooleanStrictOrNull()
-        val xcodeDebug =
-            providers
-                .environmentVariable("CONFIGURATION")
-                .orNull
-                ?.let { !it.equals("Release", ignoreCase = true) }
-        val debugValue: Boolean = metrolistDebugProp ?: xcodeDebug ?: !isReleaseTask
+        val debugValue: Boolean = metrolistDebugProp ?: !isReleaseTask
         val lyprioBaseUrl =
             providers
                 .gradleProperty("LYPRIO_BASE_URL")
@@ -634,11 +603,6 @@ val generateBuildConfig =
                 """
                 package com.metrolist.shared
 
-                import kotlin.experimental.ExperimentalObjCRefinement
-                import kotlin.native.HiddenFromObjC
-
-                @OptIn(ExperimentalObjCRefinement::class)
-                @HiddenFromObjC
                 object BuildConfig {
                     const val LASTFM_API_KEY = "${inputs.properties["lastFmKey"]}"
                     const val LASTFM_SECRET = "${inputs.properties["lastFmSecret"]}"
@@ -666,8 +630,6 @@ dependencies {
     add("androidRuntimeClasspath", libs.ui.tooling)
     add("kspAndroid", libs.room.compiler)
     add("kspDesktop", libs.room.compiler)
-    add("kspIosArm64", libs.room.compiler)
-    add("kspIosSimulatorArm64", libs.room.compiler)
 }
 
 class RoomSchemaArgProvider(
@@ -850,12 +812,6 @@ val signedOutProbeVideoId =
         .orElse("")
 
 val javaToolchainService = extensions.getByType<JavaToolchainService>()
-
-tasks.withType<KotlinNativeSimulatorTest>().configureEach {
-    // AVFoundation needs the media services of a booted simulator.
-    standalone.set(false)
-    testLogging.exceptionFormat = TestExceptionFormat.FULL
-}
 
 tasks.withType<Test>().configureEach {
     jvmArgs("--enable-native-access=ALL-UNNAMED", "--sun-misc-unsafe-memory-access=allow")

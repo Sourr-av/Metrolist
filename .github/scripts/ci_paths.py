@@ -7,12 +7,11 @@ import re
 import subprocess
 
 
-PLATFORMS = ("android", "desktop", "ios", "repository")
+PLATFORMS = ("android", "desktop", "repository")
 ALL_CHECKS = PLATFORMS
 WORKFLOWS = {
     "android": ("build-android.yml", "reusable-android-build.yml"),
     "desktop": ("build-desktop-native.yml", "build-desktop.yml", "reusable-desktop-", "reusable-windows-manager.yml"),
-    "ios": ("build-ios.yml", "reusable-ios-build.yml"),
     "repository": ("verify-repository-checks.yml", "verify-aur-package.yml"),
 }
 
@@ -45,10 +44,6 @@ def classify(paths):
             "scripts/collect_android_apks.py", "scripts/test_collect_android_apks.py", "scripts/test_generate_android_strings.py",
         ):
             selected.add("android")
-        elif path.startswith(("iosApp/", "shared/src/ios", "shared/src/apple")) or path in (
-            "scripts/build_ios.sh", "scripts/test_build_ios.py", "scripts/ios_version.sh",
-        ):
-            selected.update(("ios", "repository"))
         elif path.startswith(("desktopApp/", "metro-wv2-helper/", "shared/src/desktop")) or path.startswith((
             "scripts/desktop-native-image/", "scripts/graalvm-pins.json", "scripts/build_appimage", "scripts/test_build_appimage", "scripts/build_linux_webview",
             "scripts/build_windows_", "scripts/desktop_smoke", "scripts/test_desktop_smoke", "scripts/test_dmg_packaging",

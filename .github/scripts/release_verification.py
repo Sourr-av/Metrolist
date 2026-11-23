@@ -13,7 +13,6 @@ from ci_paths import changed_paths, classify, metadata_only
 CHECKS = {
     "android": ("ci.yml", "Android / APK"),
     "desktop": ("ci.yml", "Desktop / Linux x64"),
-    "ios": ("ci.yml", "iOS / Validate iOS"),
     "repository": ("ci.yml", "Select checks and repository checks"),
 }
 

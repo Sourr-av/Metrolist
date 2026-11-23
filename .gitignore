@@ -45,19 +45,6 @@ metro-wv2-helper/bin/
 metro-wv2-helper/obj/
 metro-wv2-helper/tests/obj/
 
-# iOS / Xcode
-DerivedData/
-iosApp/DerivedData/
-iosApp/build/
-project.xcworkspace/
-xcuserdata/
-*.xcuserstate
-*.ipa
-
-# Swift
-.swift-version
-swiftly-x86_64.tar.gz
-
 # Secrets
 secrets.properties
 chucker-export-*

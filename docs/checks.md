@@ -1,6 +1,6 @@
 # Checks and CI
 
-Run the commands for each platform your change affects. Changes to common code require Android, desktop and iOS verification. iOS compilation and rendering need macOS.
+Run the commands for each platform your change affects. Changes to common code require Android and desktop verification.
 
 ## Platform checks
 
@@ -10,9 +10,6 @@ Run the commands for each platform your change affects. Changes to common code r
 
 # Desktop and shared
 ./gradlew :desktopApp:build :shared:desktopTest :shared:ktlintCheck :listenTogetherProto:ktlintCheck
-
-# Shared iOS tests, on macOS with Xcode
-./gradlew :shared:iosSimulatorArm64Test
 ```
 
 Run debug verification separately from release packaging. Shared `BuildConfig.DEBUG` depends on requested task names, so adding a release task disables logging that some backend tests expect.
@@ -24,8 +21,6 @@ Android unit tests include the generated shared Compose catalog on their runtime
 Android lint uses `androidApp/lint-baseline.xml`. Translation and resource checks cannot see all shared Compose accessors, so lint disables `MissingTranslation`, `MissingQuantity`, `PluralsCandidate` and `UnusedResources`.
 
 `.editorconfig` changes run Android and desktop ktlint checks. Dispatch `verify-repository-checks.yml` to parse the Flatpak manifest and dry-run its Makefile targets.
-
-`make ios-test` parses all Swift host sources with the iOS Simulator SDK on macOS; it requires Xcode command-line tools.
 
 Live YouTube tests are opt-in and never run in CI. See [InnerTube live tests](innertube.md#live-tests).
 
@@ -241,13 +236,11 @@ python3 scripts/test_compose_resource_escapes.py
 python3 scripts/check_translation_mechanics.py
 python3 scripts/test_translation_mechanics.py
 python3 scripts/test_hooks.py
-python3 scripts/test_build_ios.py
 python3 scripts/test_build_appimage.py
 python3 scripts/test_linux_appimage_apprun.py
 python3 scripts/test_desktop_smoke.py
 python3 scripts/test_dmg_packaging.py
 python3 scripts/test_distribution.py
-python3 scripts/test_generate_altstore_source.py
 python3 scripts/test_tester_release_version.py
 python3 .github/actions/upload-desktop-sentry/test_verify_metadata.py
 python3 -m unittest discover -s .github/tests
@@ -302,9 +295,9 @@ Each attempted launch uploads a `desktop-smoke-<platform>-<arch>` artifact, with
 
 [CI](../.github/workflows/ci.yml) handles PRs and pushes to main with one selection job. That job also runs the cheap repository checks, including translation validation. Docs-only changes stop there. New runs cancel unfinished checks for the same PR or branch.
 
-`.github/scripts/ci_paths.py` owns the path rules. Common production code and Compose resources select Android, desktop and iOS. Common tests and JVM shared sources select Android and desktop. Platform source sets select their platform. Gradle scripts, catalogs, wrapper files, shared actions, release workflows and unknown paths select every platform. Deleted paths and both sides of renames count. An unreadable diff selects every platform. Version-only release bumps reuse the source revision's checks through the [release gate](releasing.md#reuse-verification).
+`.github/scripts/ci_paths.py` owns the path rules. Common production code, Compose resources, common tests and JVM shared sources select Android and desktop. Platform source sets select their platform. Gradle scripts, catalogs, wrapper files, shared actions, release workflows and unknown paths select every platform. Deleted paths and both sides of renames count. An unreadable diff selects every platform. Version-only release bumps reuse the source revision's checks through the [release gate](releasing.md#reuse-verification).
 
-Android runs ktlint, lint and unit tests. PRs also assemble the debug APK. Desktop verifies Linux x64 with ktlint, shared and desktop tests, and integrity checks. PRs also request desktop compilation. On main, Nightly supplies Android APK and Linux/Windows native builds, so CI omits debug APK assembly and the separate desktop compile task. Tests still compile their dependencies. iOS runs Swift validation and simulator backend tests on macOS for common production, iOS or build-input changes. Linux cannot compile Apple SDK targets.
+Android runs ktlint, lint and unit tests. PRs also assemble the debug APK. Desktop verifies Linux x64 with ktlint, shared and desktop tests, and integrity checks. PRs also request desktop compilation. On main, Nightly supplies Android APK and Linux/Windows native builds, so CI omits debug APK assembly and the separate desktop compile task. Tests still compile their dependencies.
 
 ARM64 desktop verification, macOS and Windows packaging, Arch builds, Flatpak validation and packaged launch checks run only through manual workflows or the existing release paths. Native Nightly builds skip launch probes; native stable release jobs run them. Arch compilation can take an hour and Flatpak validation installs extra tools, so neither runs automatically for packaging edits. Dispatch `build-desktop.yml`, `verify-aur-package.yml` or `verify-repository-checks.yml` when changing their inputs. `release.yml` keeps its verification gate, signing, Sentry finalization and publication steps.
 
@@ -324,10 +317,10 @@ A PR touching global build inputs now runs four jobs. Run `python3 -m unittest d
 
 Preserve these rules when changing workflows:
 
-- Verification builds use `-Pmetrolist.sourceRevision=` to avoid invalidating Kotlin compilation on every commit. Published packages keep the real revision. On iOS, clear it only for backend tests, not the Xcode archive.
-- Give each distinct task graph its own `prepare-ci-gradle` cache scope. Android debug and release, and iOS tests and packaging, must not overwrite each other's caches.
-- Do not persist the configuration cache for builds that read credentials during configuration, including Android debug and iOS jobs. Release Android and desktop packaging use `--no-configuration-cache` to avoid serializing secrets into a cache entry.
-- Pull requests may restore caches but must not save them. Keep native cache keys specific to runner architecture, OS and toolchain. iOS caches `~/.konan` separately for tests and packaging, with a dependency fingerprint so changed dependencies can save an updated cache. Fallback restores must keep the full OS, architecture, Kotlin, Xcode and task-graph prefix. Releases reuse verified tests through the gate; manual IPA builds run tests and packaging. Windows caches NuGet packages by SDK and project dependencies. Rust toolchain caches include the pinned version, OS and architecture. Linux WebView compilation keys include the actual distribution and native library versions.
+- Verification builds use `-Pmetrolist.sourceRevision=` to avoid invalidating Kotlin compilation on every commit. Published packages keep the real revision.
+- Give each distinct task graph its own `prepare-ci-gradle` cache scope. Android debug and release must not overwrite each other's caches.
+- Do not persist the configuration cache for builds that read credentials during configuration, including Android debug jobs. Release Android and desktop packaging use `--no-configuration-cache` to avoid serializing secrets into a cache entry.
+- Pull requests may restore caches but must not save them. Keep native cache keys specific to runner architecture, OS and toolchain. Windows caches NuGet packages by SDK and project dependencies. Rust toolchain caches include the pinned version, OS and architecture. Linux WebView compilation keys include the actual distribution and native library versions.
 - Runtime task caching fingerprints the full packaging JDK, OS, host architecture, module options and CDS JVM flags. Do not cache a jlink output using only a Java major version. Manual packaging runs the integrity checks after restoration. Gated releases set `metrolist.verifyPackaging=false`; Linux x64 verification runs `:shared:verifyDesktopJarIntegrity`, which checks compiled classes, retained glyphmind licenses and retired romanization assets in the shared JAR. It does not run `:desktopApp:verifyReleaseDistributableJars` against a release package.
 - Release Android skips `lintVitalRelease` with `-x` because debug verification already runs lint. Do not replace this with `checkReleaseBuilds = false`, which unregisters the task.
 - Measure cache changes on hosted runners with cold and repeated warm runs. Local timings do not establish CI speedups.

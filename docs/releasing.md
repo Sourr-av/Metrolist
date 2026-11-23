@@ -6,7 +6,7 @@ Change `appVersion` only with release authorization. Workflows own signing, chec
 
 Keep release commits to `appVersion`, `versionCode` and release metadata. `.github/scripts/release_verification.py` follows first-parent history to find the source commit whose tree differs only in `gradle.properties` version assignments, `docs/changelog.md` and `fastlane/metadata/android/*/changelogs/*.txt`. Any other Gradle property or source change ends that search. Manual retries with release fixes must verify those fixes too.
 
-Before creating staging or starting platform builds, releases query GitHub for the applicable Android, desktop, iOS and repository jobs in CI. The gate uses the same path rules as push/PR verification. It requires successful, completed GitHub Actions check runs from the expected main-branch workflows. A successful workflow with a skipped required job is insufficient. Android verification must include the debug checks, not just release APK assembly. A failed CI run blocks reuse even if the last commit did not touch that platform, because one push can contain several commits.
+Before creating staging or starting platform builds, releases query GitHub for the applicable Android, desktop and repository jobs in CI. The gate uses the same path rules as push/PR verification. It requires successful, completed GitHub Actions check runs from the expected main-branch workflows. A successful workflow with a skipped required job is insufficient. Android verification must include the debug checks, not just release APK assembly. A failed CI run blocks reuse even if the last commit did not touch that platform, because one push can contain several commits.
 
 The gate first tries the release revision, then each metadata-equivalent ancestor through the source commit. If it cannot prove verification, it fails before packaging. It does not start a second test matrix or wait for another run. Finish or rerun verification, then retry the failed release run. To verify the current main revision explicitly, run the needed commands below and wait for success.
 
@@ -14,7 +14,7 @@ The gate first tries the release revision, then each metadata-equivalent ancesto
 gh workflow run ci.yml --ref main
 ```
 
-Once the gate passes, release jobs build, sign and upload. They skip unit tests, lint, JVM launch smoke tests, verification-only Gradle dependencies and the duplicate iOS simulator job. They still inspect archive versions and native architectures and verify APK signatures. `metrolist.verifyPackaging=false` removes the Gradle verification dependencies only in these gated jobs; normal builds keep them. Manual package dispatches keep final distributable inspection. `build-desktop.yml` with `windows-manager=true` builds and tests the pinned Windows installer against the native portable ZIP, including install, repair and uninstall. Run it when changing installer or payload behavior. Stable releases run the same installer test against the native Windows x64 ZIP before publishing, and the native Linux x64 and Windows x64 jobs run the strict launch smoke. See [release verification gate](build-performance.md#release-verification-gate) for where skipped checks run.
+Once the gate passes, release jobs build, sign and upload. They skip unit tests, lint, JVM launch smoke tests and verification-only Gradle dependencies. They still inspect archive versions and native architectures and verify APK signatures. `metrolist.verifyPackaging=false` removes the Gradle verification dependencies only in these gated jobs; normal builds keep them. Manual package dispatches keep final distributable inspection. `build-desktop.yml` with `windows-manager=true` builds and tests the pinned Windows installer against the native portable ZIP, including install, repair and uninstall. Run it when changing installer or payload behavior. Stable releases run the same installer test against the native Windows x64 ZIP before publishing, and the native Linux x64 and Windows x64 jobs run the strict launch smoke. See [release verification gate](build-performance.md#release-verification-gate) for where skipped checks run.
 
 The prepare jobs have read-only Actions and checks permissions for this gate. Release credentials stay in the platform and publication jobs. Credential-bearing Gradle configuration caches are never persisted.
 
@@ -42,7 +42,7 @@ IzzyOnDroid takes `Metrolist-izzy.apk`, built from the `izzy` build type in its 
 
 1. Run the affected [checks](checks.md) before tagging.
 2. Supply Android signing, Last.fm and Lyprio credentials. The workflow checks the APK with `apksigner`.
-3. Let platform jobs produce Android, desktop, the pinned Windows manager installer and unsigned iOS packages.
+3. Let platform jobs produce Android, desktop and the pinned Windows manager installer packages.
 4. Publication validates expected assets and checksums in a draft, then publishes. A rerun cannot modify a published release; it succeeds only when all expected assets already exist.
 5. Sentry finalization and intermediate-artifact cleanup run after successful publication. Failures keep artifacts for retry within their retention period.
 

@@ -30,7 +30,7 @@ class RepositoryChecksTest(unittest.TestCase):
         self.assertLess(workflow.index('Give builder ownership'), workflow.index('Build local Arch package'))
 
     def test_packaging_entry_points_are_manual_only(self):
-        for name in ('build-android.yml', 'build-desktop.yml', 'build-ios.yml',
+        for name in ('build-android.yml', 'build-desktop.yml',
                      'verify-aur-package.yml', 'verify-repository-checks.yml'):
             workflow = (WORKFLOW.parent / name).read_text()
             events = workflow.split('on:\n', 1)[1].split('\nconcurrency:', 1)[0]
@@ -67,12 +67,9 @@ class RepositoryChecksTest(unittest.TestCase):
         commands = set(re.findall(r'^          python3 (\S+)\s*$', workflow, re.MULTILINE))
         self.assertIn('scripts/check_translation_mechanics.py', commands)
         self.assertIn('scripts/test_translation_mechanics.py', commands)
-        self.assertIn('scripts/test_build_ios.py', commands)
         self.assertIn('scripts/test_metromem.py', commands)
         self.assertIn('python3 -m unittest discover -s .github/tests', workflow)
         inputs = commands | {
-            'scripts/ios_version.sh',
-            'scripts/build_ios.sh',
             'scripts/build_appimage.sh',
             'scripts/generate_distribution.py',
             'scripts/propose_distribution.py',

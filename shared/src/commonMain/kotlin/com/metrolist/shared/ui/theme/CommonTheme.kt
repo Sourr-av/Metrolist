@@ -31,7 +31,6 @@ import com.materialkolor.score.Score
 import com.metrolist.shared.settings.Settings
 import com.metrolist.shared.settings.ThemePaletteStyle
 import com.metrolist.shared.ui.haptics.MetrolistHapticsProvider
-import com.metrolist.shared.ui.settings.IosAppearanceProvider
 import com.metrolist.shared.utils.Logger
 import com.metrolist.shared.utils.artworkColors
 import kotlinx.coroutines.Dispatchers
@@ -102,15 +101,13 @@ fun MetrolistTheme(
     val motionScheme = remember { MotionScheme.expressive() }
     val animatedColorScheme = animateColorScheme(colorScheme, motionScheme)
 
-    IosAppearanceProvider {
-        MaterialExpressiveTheme(
-            colorScheme = animatedColorScheme,
-            typography = MetrolistTypography(),
-            shapes = MetrolistShapes,
-            motionScheme = motionScheme,
-            content = { MetrolistHapticsProvider(content) },
-        )
-    }
+    MaterialExpressiveTheme(
+        colorScheme = animatedColorScheme,
+        typography = MetrolistTypography(),
+        shapes = MetrolistShapes,
+        motionScheme = motionScheme,
+        content = { MetrolistHapticsProvider(content) },
+    )
 }
 
 @Composable

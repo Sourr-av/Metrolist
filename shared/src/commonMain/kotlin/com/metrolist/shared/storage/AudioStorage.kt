@@ -8,17 +8,9 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 
-internal const val IOS_QUARANTINED_DOWNLOAD_LOCATION = "IOS_APPLICATION_SUPPORT_QUARANTINED"
+internal fun isAvailableDownload(entry: CachedAudioEntity): Boolean = entry.kind == KIND_DOWNLOAD
 
-internal fun quarantineAudioDownload(entry: CachedAudioEntity): CachedAudioEntity =
-    entry.copy(cacheLocation = IOS_QUARANTINED_DOWNLOAD_LOCATION)
-
-internal fun isQuarantinedDownload(entry: CachedAudioEntity): Boolean =
-    entry.kind == KIND_DOWNLOAD && entry.cacheLocation == IOS_QUARANTINED_DOWNLOAD_LOCATION
-
-internal fun isAvailableDownload(entry: CachedAudioEntity): Boolean = entry.kind == KIND_DOWNLOAD && !isQuarantinedDownload(entry)
-
-internal fun isAvailableCachedAudio(entry: CachedAudioEntity): Boolean = !isQuarantinedDownload(entry)
+internal fun isAvailableCachedAudio(entry: CachedAudioEntity): Boolean = true
 
 internal fun canUseDownloadedAudio(
     entry: CachedAudioEntity,
@@ -33,7 +25,7 @@ internal fun rebasedAudioPath(
 internal fun shouldRetainAudioFile(
     entry: CachedAudioEntity,
     fileIsValid: Boolean,
-): Boolean = isQuarantinedDownload(entry) || fileIsValid
+): Boolean = fileIsValid
 
 internal fun shouldKeepDownloadInsteadOfCache(
     entry: CachedAudioEntity,
@@ -83,11 +75,6 @@ internal fun canWriteAudioChunk(
     val writableBytes = (availableBytes - reservedBytes).coerceAtLeast(0L)
     return writtenBytes <= writableBytes && chunkBytes <= writableBytes - writtenBytes
 }
-
-internal fun isIosPlayableAudioMimeType(mimeType: String?): Boolean =
-    mimeType?.substringBefore(';')?.lowercase()?.let {
-        it in setOf("audio/mp4", "audio/aac", "audio/x-m4a", "audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav")
-    } == true
 
 internal fun isCompleteAudioDownload(
     downloadedBytes: Long,

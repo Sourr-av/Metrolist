@@ -28,7 +28,6 @@ import com.metrolist.shared.generated.resources.device_connect_device_type_and_m
 import com.metrolist.shared.generated.resources.device_connect_device_type_android_auto
 import com.metrolist.shared.generated.resources.device_connect_device_type_android_phone
 import com.metrolist.shared.generated.resources.device_connect_device_type_desktop
-import com.metrolist.shared.generated.resources.device_connect_device_type_ios
 import com.metrolist.shared.generated.resources.device_connect_device_type_unknown
 import com.metrolist.shared.generated.resources.device_connect_device_type_wear_os
 import com.metrolist.shared.generated.resources.device_connect_sync_conflict
@@ -54,7 +53,6 @@ fun DeviceConnectDeviceTypeIcon(
             DeviceConnectDeviceType.DESKTOP -> MetrolistIcons.Outlined.Computer
             DeviceConnectDeviceType.ANDROID_AUTO -> MetrolistIcons.Outlined.DirectionsCar
             DeviceConnectDeviceType.WEAR_OS -> MetrolistIcons.Outlined.Watch
-            DeviceConnectDeviceType.IOS -> MetrolistIcons.Outlined.PhoneIphone
             DeviceConnectDeviceType.UNKNOWN -> MetrolistIcons.Outlined.DeviceUnknown
         }
     Surface(
@@ -89,7 +87,6 @@ fun deviceConnectDeviceMetadata(
                 DeviceConnectDeviceType.DESKTOP -> Res.string.device_connect_device_type_desktop
                 DeviceConnectDeviceType.ANDROID_AUTO -> Res.string.device_connect_device_type_android_auto
                 DeviceConnectDeviceType.WEAR_OS -> Res.string.device_connect_device_type_wear_os
-                DeviceConnectDeviceType.IOS -> Res.string.device_connect_device_type_ios
                 DeviceConnectDeviceType.UNKNOWN -> Res.string.device_connect_device_type_unknown
             },
         )

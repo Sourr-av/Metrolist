@@ -57,16 +57,14 @@ internal fun SettingsUiRegistryBuilder.registerPlaybackSettings(host: SharedSett
         icon = MetrolistIcons.Outlined.PlayArrow,
         tone = SettingsTone.ROSE,
     ) {
-        if (host.platform != SettingsPlatform.IOS) {
-            group("cast", stringResource(Res.string.settings_cast_title)) {
-                switch(
-                    id = "castEnabled",
-                    title = stringResource(Res.string.settings_cast_title),
-                    description = stringResource(Res.string.cast_description),
-                    checked = settings.castEnabled,
-                ) {
-                    settings.castEnabled = it
-                }
+        group("cast", stringResource(Res.string.settings_cast_title)) {
+            switch(
+                id = "castEnabled",
+                title = stringResource(Res.string.settings_cast_title),
+                description = stringResource(Res.string.cast_description),
+                checked = settings.castEnabled,
+            ) {
+                settings.castEnabled = it
             }
         }
         group("audio", stringResource(Res.string.general)) {
@@ -81,14 +79,12 @@ internal fun SettingsUiRegistryBuilder.registerPlaybackSettings(host: SharedSett
                 settings.audioQuality = it
                 host.onSettingChanged(SettingsChangeEffect.AUDIO, null)
             }
-            if (host.platform != SettingsPlatform.IOS) {
-                switch(
-                    id = "sponsorBlockEnabled",
-                    title = stringResource(Res.string.sponsorblock_podcasts),
-                    description = stringResource(Res.string.sponsorblock_podcasts_description),
-                    checked = settings.sponsorBlockEnabled,
-                ) { settings.sponsorBlockEnabled = it }
-            }
+            switch(
+                id = "sponsorBlockEnabled",
+                title = stringResource(Res.string.sponsorblock_podcasts),
+                description = stringResource(Res.string.sponsorblock_podcasts_description),
+                checked = settings.sponsorBlockEnabled,
+            ) { settings.sponsorBlockEnabled = it }
             switch(
                 id = "skipSilence",
                 title = stringResource(Res.string.skip_silence),
@@ -98,22 +94,20 @@ internal fun SettingsUiRegistryBuilder.registerPlaybackSettings(host: SharedSett
                 settings.skipSilence = it
                 host.onSettingChanged(SettingsChangeEffect.AUDIO, null)
             }
-            if (host.platform != SettingsPlatform.IOS) {
-                switch(
-                    id = "skipSilenceInstant",
-                    title = stringResource(Res.string.skip_silence_instant),
-                    description =
-                        if (settings.skipSilence) {
-                            stringResource(Res.string.skip_silence_instant_desc)
-                        } else {
-                            stringResource(Res.string.settings_requires_enabled, stringResource(Res.string.skip_silence))
-                        },
-                    checked = settings.skipSilenceInstant,
-                    enabled = settings.skipSilence,
-                ) {
-                    settings.skipSilenceInstant = it
-                    host.onSettingChanged(SettingsChangeEffect.AUDIO, null)
-                }
+            switch(
+                id = "skipSilenceInstant",
+                title = stringResource(Res.string.skip_silence_instant),
+                description =
+                    if (settings.skipSilence) {
+                        stringResource(Res.string.skip_silence_instant_desc)
+                    } else {
+                        stringResource(Res.string.settings_requires_enabled, stringResource(Res.string.skip_silence))
+                    },
+                checked = settings.skipSilenceInstant,
+                enabled = settings.skipSilence,
+            ) {
+                settings.skipSilenceInstant = it
+                host.onSettingChanged(SettingsChangeEffect.AUDIO, null)
             }
             switch(
                 id = "keepPausedOnSongChange",
@@ -135,7 +129,6 @@ internal fun SettingsUiRegistryBuilder.registerPlaybackSettings(host: SharedSett
                         when (host.platform) {
                             SettingsPlatform.DESKTOP -> Res.string.seek_duration_description
                             SettingsPlatform.ANDROID -> Res.string.seek_duration_description_android
-                            SettingsPlatform.IOS -> Res.string.seek_duration_description_skip_controls
                         },
                     ),
                 valueLabel = stringResource(Res.string.settings_seconds_value, settings.seekDurationSeconds),
@@ -348,17 +341,15 @@ internal fun SettingsUiRegistryBuilder.registerPlaybackSettings(host: SharedSett
                     settings.autoDownloadOnLike = enabled
                 }
             }
-            if (host.platform != SettingsPlatform.IOS) {
-                switch(
-                    id = "autoDownloadSavedCollections",
-                    title = stringResource(Res.string.auto_download_saved_collections),
-                    checked = settings.autoDownloadSavedCollections,
-                ) { enabled ->
-                    if (host.platform == SettingsPlatform.ANDROID) {
-                        host.onSettingChanged(SettingsChangeEffect.AUTO_DOWNLOAD_SAVED_COLLECTIONS, enabled)
-                    } else {
-                        settings.autoDownloadSavedCollections = enabled
-                    }
+            switch(
+                id = "autoDownloadSavedCollections",
+                title = stringResource(Res.string.auto_download_saved_collections),
+                checked = settings.autoDownloadSavedCollections,
+            ) { enabled ->
+                if (host.platform == SettingsPlatform.ANDROID) {
+                    host.onSettingChanged(SettingsChangeEffect.AUTO_DOWNLOAD_SAVED_COLLECTIONS, enabled)
+                } else {
+                    settings.autoDownloadSavedCollections = enabled
                 }
             }
         }
