@@ -37,13 +37,13 @@ class CircuitBreakerAndDbAdapterTest {
 
             // 4 failures keep circuit closed.
             repeat(4) {
-                val res = breaker.execute(timeoutMs = 1_000L) { error("boom") }
-                assertNull(res)
+                val res = breaker.execute<String>(timeoutMs = 1_000L) { error("boom") }
+                assertEquals(CircuitCallResult.Failed, res)
                 assertFalse(breaker.isOpen())
             }
 
             // 5th consecutive failure opens the circuit for 60s.
-            assertNull(breaker.execute(timeoutMs = 1_000L) { error("boom 5") })
+            assertEquals(CircuitCallResult.Failed, breaker.execute<String>(timeoutMs = 1_000L) { error("boom 5") })
             assertTrue(breaker.isOpen())
 
             // Calls while open short-circuit without invoking block.
@@ -53,14 +53,14 @@ class CircuitBreakerAndDbAdapterTest {
                     invokedWhileOpen = true
                     "ok"
                 }
-            assertNull(skipped)
+            assertEquals(CircuitCallResult.CircuitOpen, skipped)
             assertFalse(invokedWhileOpen)
 
             // After 60s cooldown, probe is allowed and success closes circuit.
             nowMs += 60_000L
             assertFalse(breaker.isOpen())
             val recovered = breaker.execute(timeoutMs = 1_000L) { "recovered" }
-            assertEquals("recovered", recovered)
+            assertEquals(CircuitCallResult.Success("recovered"), recovered)
             assertFalse(breaker.isOpen())
         }
 
@@ -76,7 +76,8 @@ class CircuitBreakerAndDbAdapterTest {
                 )
 
             // Timeouts count toward failure threshold.
-            assertNull(
+            assertEquals(
+                CircuitCallResult.TimedOut,
                 breaker.execute(timeoutMs = 100L) {
                     delay(5_000L)
                     "never"
@@ -86,14 +87,15 @@ class CircuitBreakerAndDbAdapterTest {
 
             // Structured CancellationException must propagate and NOT trip the breaker.
             assertFailsWith<CancellationException> {
-                breaker.execute(timeoutMs = 1_000L) {
+                breaker.execute<String>(timeoutMs = 1_000L) {
                     throw CancellationException("caller cancelled")
                 }
             }
             assertFalse(breaker.isOpen())
 
             // One more timeout reaches threshold = 2 and opens circuit.
-            assertNull(
+            assertEquals(
+                CircuitCallResult.TimedOut,
                 breaker.execute(timeoutMs = 100L) {
                     delay(5_000L)
                     "never"
