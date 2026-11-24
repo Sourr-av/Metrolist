@@ -265,6 +265,77 @@ class SpaceGatesAndRankerTest {
         }
 
     @Test
+    fun subgenreCanonicalIdMultiGenreArtistVotesAndShownRelaxationForAcceptCount() =
+        runTest {
+            val trackLookup =
+                object : TrackClassLookup {
+                    override suspend fun getTrackClass(videoId: String): TrackClassRecord? =
+                        when (videoId) {
+                            "t_trap" -> TrackClassRecord("t_trap", "en", 1.0, "hip_hop_trap", "lastfm", nowMs)
+                            "t_shown_rap" -> TrackClassRecord("t_shown_rap", "en", 1.0, "hip_hop", "lastfm", nowMs)
+                            else -> null
+                        }
+                }
+            val artistLookup =
+                object : ArtistProfileLookup {
+                    override suspend fun getArtistProfile(artistId: String): ArtistProfileRecord? =
+                        when (artistId) {
+                            "a_multi_rap" ->
+                                ArtistProfileRecord(
+                                    artistId = "a_multi_rap",
+                                    name = "Kendrick",
+                                    languageVotes = mapOf("en" to 3.0),
+                                    totalVotes = 3.0,
+                                    updatedAt = nowMs,
+                                    genreVotes = mapOf("hip_hop" to 3.0, "hip_hop_trap" to 1.5, "rnb" to 1.5),
+                                )
+
+                            "a_pure_rock" ->
+                                ArtistProfileRecord(
+                                    artistId = "a_pure_rock",
+                                    name = "Rock Band",
+                                    languageVotes = mapOf("en" to 3.0),
+                                    totalVotes = 3.0,
+                                    updatedAt = nowMs,
+                                    genreVotes = mapOf("rock" to 4.5),
+                                )
+
+                            else -> null
+                        }
+                }
+            val gates = SpaceGates(LanguageCascade(trackLookup, artistLookup), trackLookup, artistLookup)
+
+            val filter = SpaceFilterSpec(languages = listOf("english"), genres = listOf("hip_hop"))
+            val manyMaybes = (1..35).map { i -> CandidateTrack(song("m_$i", artistId = "a_m_$i"), setOf(CandidateSource.HOME)) }
+            val candidates =
+                listOf(
+                    CandidateTrack(song("t_trap", artistId = "a_trap"), setOf(CandidateSource.HOME)),
+                    CandidateTrack(song("t_multi_artist", artistId = "a_multi_rap"), setOf(CandidateSource.HOME)),
+                    CandidateTrack(song("t_rock_artist", artistId = "a_pure_rock"), setOf(CandidateSource.HOME)),
+                    CandidateTrack(song("t_shown_rap", artistId = "a_shown"), setOf(CandidateSource.HOME)),
+                ) + manyMaybes
+
+            val result =
+                gates.evaluateWithShownRelaxation(
+                    candidates,
+                    GateContext(
+                        nowMs = nowMs,
+                        filter = filter,
+                        recentlyShownVideoIds = setOf("t_shown_rap"),
+                    ),
+                )
+            val byId = result.survivors.associateBy { it.candidate.song.id }
+            assertEquals(GateVerdict.ACCEPT, byId.getValue("t_trap").genreVerdict)
+            assertEquals(GenreAcceptanceRule.TRACK_CLASS_GENRE, byId.getValue("t_trap").genreRule)
+            assertEquals(GateVerdict.ACCEPT, byId.getValue("t_multi_artist").genreVerdict)
+            assertEquals(GenreAcceptanceRule.ARTIST_PROFILE_GENRE_VOTES, byId.getValue("t_multi_artist").genreRule)
+            assertFalse("t_rock_artist" in byId)
+            // Even with 35 MAYBE tracks, acceptCount < 30 so shown exclusion must relax and keep t_shown_rap.
+            assertTrue(result.stats.shownExclusionRelaxed)
+            assertEquals(GateVerdict.ACCEPT, byId.getValue("t_shown_rap").genreVerdict)
+        }
+
+    @Test
     fun rankerFeaturesAndPlayCountParsing() {
         assertEquals(12_000_000L, SpaceRanker.parsePlayCountText("12M"))
         assertEquals(1_400L, SpaceRanker.parsePlayCountText("1.4K plays"))

@@ -146,6 +146,7 @@ class LastFmSpaceTagResolver(
         val detectedLanguages =
             extractCanonicalLanguages(
                 text = cleanName,
+                titleOnly = cleanName,
                 primaryTags = rawTags,
                 fallbackTags = emptyList(),
                 bioLanguages = bioLanguages,
@@ -216,6 +217,7 @@ class LastFmSpaceTagResolver(
         val detectedLangs =
             extractCanonicalLanguages(
                 text = combinedText,
+                titleOnly = cleanTitle,
                 primaryTags = primaryTags,
                 fallbackTags = fallbackTags,
                 bioLanguages = bioLanguages,
@@ -243,6 +245,7 @@ class LastFmSpaceTagResolver(
 
     private fun extractCanonicalLanguages(
         text: String,
+        titleOnly: String,
         primaryTags: List<LastFmTag>,
         fallbackTags: List<LastFmTag>,
         bioLanguages: Set<String>,
@@ -283,7 +286,7 @@ class LastFmSpaceTagResolver(
                     fallbackTags = fallbackTags,
                     filter = langOnlyFilter,
                     source = SpaceCandidateSource.HOME_FEED,
-                    titleOnly = text,
+                    titleOnly = titleOnly,
                     bioLanguages = bioLanguages,
                 )
             when (decision) {
@@ -376,14 +379,34 @@ class LastFmSpaceTagResolver(
                 filter.genres.mapTo(mutableSetOf()) { id ->
                     SpaceFilterTaxonomy.genreOption(id)?.let { it.parentId ?: it.id } ?: id
                 }
-            val artistRoots =
-                rawTags
-                    .filterNot { SpaceFilterTaxonomy.isNoiseTag(it.name) }
-                    .flatMap { SpaceFilterTaxonomy.detectGenresFromTag(it.name) }
-                    .mapTo(mutableSetOf()) { id ->
-                        SpaceFilterTaxonomy.genreOption(id)?.let { it.parentId ?: it.id } ?: id
+            var matchingMaxCount = 0
+            var unrelatedMaxCount = 0
+            val strongUnrelatedRoots = mutableSetOf<String>()
+            for (tag in rawTags) {
+                if (SpaceFilterTaxonomy.isNoiseTag(tag.name)) continue
+                val roots =
+                    SpaceFilterTaxonomy
+                        .detectGenresFromTag(tag.name)
+                        .mapTo(mutableSetOf()) { id ->
+                            SpaceFilterTaxonomy.genreOption(id)?.let { it.parentId ?: it.id } ?: id
+                        }
+                if (roots.isEmpty()) continue
+                if (roots.any { it in requestedRoots }) {
+                    matchingMaxCount = maxOf(matchingMaxCount, tag.count)
+                } else {
+                    unrelatedMaxCount = maxOf(unrelatedMaxCount, tag.count)
+                    if (tag.count >= 55) {
+                        strongUnrelatedRoots.addAll(roots)
                     }
-            if ((artistRoots - requestedRoots).size >= 2) return true
+                }
+            }
+            // If the artist's dominant genre tag clearly matches the requested genre (e.g. hip-hop/rap at 88–100
+            // with secondary crossover tags like rnb/pop), accept artist-level classification without forcing
+            // extra per-track Last.fm round-trips.
+            if (matchingMaxCount >= 60 && matchingMaxCount >= unrelatedMaxCount) {
+                return false
+            }
+            if (strongUnrelatedRoots.size >= 2) return true
         }
         return false
     }

@@ -149,6 +149,7 @@ data class SpaceFeedEmission(
     val keepListening: List<SongItem>,
     val forgottenFavorites: List<SongItem>,
     val stats: SpaceRefreshStats,
+    val l5Pending: Boolean = false,
 )
 
 class SpaceRecEngine(
@@ -360,6 +361,7 @@ class SpaceRecEngine(
                             stageATimeout = stageATimeout,
                             hardDeadlineHit = false,
                         ),
+                    l5Pending = true,
                 ),
             )
 
@@ -558,6 +560,14 @@ class SpaceRecEngine(
                     remainingBudget = MAX_TRACK_DIAGNOSTIC_LOGS - diagnosticLinesLogged,
                 )
 
+            val l5ArtistBatches = buildL5ArtistBatches(finalEval.ranked, finalEval.localUnresolved)
+            val remainingL5BeforeSend = (config.l5WindowMs - (clock() - refreshStartMs)).coerceAtLeast(0L)
+            val willRunL5 =
+                remainingL5BeforeSend > 0L &&
+                    resolver.isAvailable &&
+                    !resolver.isCircuitOpen &&
+                    l5ArtistBatches.isNotEmpty()
+
             send(
                 SpaceFeedEmission(
                     phase = SpaceFeedPhase.FINAL,
@@ -566,81 +576,115 @@ class SpaceRecEngine(
                     keepListening = finalEval.keepListening,
                     forgottenFavorites = finalEval.forgottenFavorites,
                     stats = finalStats,
+                    l5Pending = willRunL5,
                 ),
             )
 
             // --- Step 6: Background L5 resolution (never blocks CACHE / PARTIAL / FINAL) ---
             val remainingL5Ms = (config.l5WindowMs - (clock() - refreshStartMs)).coerceAtLeast(0L)
-            if (remainingL5Ms > 0L && resolver.isAvailable && !resolver.isCircuitOpen) {
+            if (remainingL5Ms > 0L && resolver.isAvailable && !resolver.isCircuitOpen && l5ArtistBatches.isNotEmpty()) {
                 val l5StartedAt = clock()
-                val l5Outcome =
-                    runL5Resolution(
-                        ranked = finalEval.ranked,
-                        filter = normalizedFilter,
-                        windowMs = remainingL5Ms,
-                    )
-                val l5ElapsedMs = (clock() - l5StartedAt).coerceAtLeast(0L)
+                val feedInitiallyEmpty =
+                    finalEval.feed.songs.isEmpty() &&
+                        finalEval.quickPicks.isEmpty() &&
+                        finalEval.keepListening.isEmpty() &&
+                        finalEval.forgottenFavorites.isEmpty()
+                val waves =
+                    if (feedInitiallyEmpty && l5ArtistBatches.size > L5_EARLY_WAVE_ARTISTS) {
+                        listOf(
+                            l5ArtistBatches.take(L5_EARLY_WAVE_ARTISTS),
+                            l5ArtistBatches.drop(L5_EARLY_WAVE_ARTISTS),
+                        )
+                    } else {
+                        listOf(l5ArtistBatches)
+                    }
 
-                if (l5Outcome.writtenRecords > 0) {
-                    val updatedNowMs = clock()
-                    val resolvedEval =
-                        evaluateAndAssemble(
-                            candidates = finalCandidates,
-                            homeShelves = finalHomeShelves,
-                            homeInput = homeInput,
+                var previousEval = finalEval
+                var totalResolvedArtists = 0
+                var totalResolvedTracks = 0
+                var totalWrittenRecords = 0
+
+                for ((waveIndex, waveBatches) in waves.withIndex()) {
+                    val waveRemainingMs = (config.l5WindowMs - (clock() - refreshStartMs)).coerceAtLeast(0L)
+                    if (waveRemainingMs <= 0L || resolver.isCircuitOpen) break
+                    val waveOutcome =
+                        runL5ResolutionWave(
+                            artistBatches = waveBatches,
                             filter = normalizedFilter,
-                            dbInputs = dbInputs,
-                            nowMs = updatedNowMs,
-                            cachedPayload = cachedPayload,
+                            windowMs = waveRemainingMs,
                         )
-                    val verdictsChanged =
-                        resolvedEval.gateResult.stats.acceptCount != finalEval.gateResult.stats.acceptCount ||
-                            resolvedEval.gateResult.stats.rejectCount != finalEval.gateResult.stats.rejectCount ||
-                            resolvedEval.gateResult.stats.maybeCount != finalEval.gateResult.stats.maybeCount ||
-                            resolvedEval.feed.songs.map { it.song.id } != finalEval.feed.songs.map { it.song.id }
+                    totalResolvedArtists += waveOutcome.resolvedArtists
+                    totalResolvedTracks += waveOutcome.resolvedTracks
+                    totalWrittenRecords += waveOutcome.writtenRecords
 
-                    if (verdictsChanged) {
-                        recordFeedProvenance(spaceId, resolvedEval)
-                        if (resolvedEval.feed.songs.isNotEmpty() || cachedPayload == null) {
-                            persistFeedCacheOnly(spaceId, nextRefreshSeq, updatedNowMs, resolvedEval)
+                    if (waveOutcome.writtenRecords > 0) {
+                        val updatedNowMs = clock()
+                        val resolvedEval =
+                            evaluateAndAssemble(
+                                candidates = finalCandidates,
+                                homeShelves = finalHomeShelves,
+                                homeInput = homeInput,
+                                filter = normalizedFilter,
+                                dbInputs = dbInputs,
+                                nowMs = updatedNowMs,
+                                cachedPayload = cachedPayload,
+                            )
+                        val verdictsChanged =
+                            resolvedEval.gateResult.stats.acceptCount != previousEval.gateResult.stats.acceptCount ||
+                                resolvedEval.gateResult.stats.rejectCount != previousEval.gateResult.stats.rejectCount ||
+                                resolvedEval.gateResult.stats.maybeCount != previousEval.gateResult.stats.maybeCount ||
+                                resolvedEval.feed.songs.map { it.song.id } != previousEval.feed.songs.map { it.song.id } ||
+                                resolvedEval.quickPicks.map { it.id } != previousEval.quickPicks.map { it.id } ||
+                                resolvedEval.keepListening.map { it.id } != previousEval.keepListening.map { it.id } ||
+                                resolvedEval.forgottenFavorites.map { it.id } != previousEval.forgottenFavorites.map { it.id }
+
+                        if (verdictsChanged) {
+                            previousEval = resolvedEval
+                            recordFeedProvenance(spaceId, resolvedEval)
+                            if (resolvedEval.feed.songs.isNotEmpty() || cachedPayload == null) {
+                                persistFeedCacheOnly(spaceId, nextRefreshSeq, updatedNowMs, resolvedEval)
+                            }
+                            val hasMoreWaves = waveIndex < waves.lastIndex && !resolver.isCircuitOpen
+                            val resolvedStats =
+                                buildStats(
+                                    spaceId = spaceId,
+                                    phase = SpaceFeedPhase.RESOLVED_UPDATE,
+                                    elapsedMs = (clock() - refreshStartMs).coerceAtLeast(0L),
+                                    cacheHit = false,
+                                    eval = resolvedEval,
+                                    stageATimeout = stageATimeout,
+                                    hardDeadlineHit = hardDeadlineHit,
+                                    l5ResolvedArtists = totalResolvedArtists,
+                                    l5ResolvedTracks = totalResolvedTracks,
+                                    l5ElapsedMs = (clock() - l5StartedAt).coerceAtLeast(0L),
+                                )
+                            diagnosticLinesLogged +=
+                                logAssembledTrackDiagnostics(
+                                    spaceId = spaceId,
+                                    phase = SpaceFeedPhase.RESOLVED_UPDATE,
+                                    eval = resolvedEval,
+                                    remainingBudget = MAX_TRACK_DIAGNOSTIC_LOGS - diagnosticLinesLogged,
+                                )
+                            send(
+                                SpaceFeedEmission(
+                                    phase = SpaceFeedPhase.RESOLVED_UPDATE,
+                                    shelves = resolvedEval.feed.shelves,
+                                    quickPicks = resolvedEval.quickPicks,
+                                    keepListening = resolvedEval.keepListening,
+                                    forgottenFavorites = resolvedEval.forgottenFavorites,
+                                    stats = resolvedStats,
+                                    l5Pending = hasMoreWaves,
+                                ),
+                            )
                         }
-                        val resolvedStats =
-                            buildStats(
-                                spaceId = spaceId,
-                                phase = SpaceFeedPhase.RESOLVED_UPDATE,
-                                elapsedMs = (clock() - refreshStartMs).coerceAtLeast(0L),
-                                cacheHit = false,
-                                eval = resolvedEval,
-                                stageATimeout = stageATimeout,
-                                hardDeadlineHit = hardDeadlineHit,
-                                l5ResolvedArtists = l5Outcome.resolvedArtists,
-                                l5ResolvedTracks = l5Outcome.resolvedTracks,
-                                l5ElapsedMs = l5ElapsedMs,
-                            )
-                        diagnosticLinesLogged +=
-                            logAssembledTrackDiagnostics(
-                                spaceId = spaceId,
-                                phase = SpaceFeedPhase.RESOLVED_UPDATE,
-                                eval = resolvedEval,
-                                remainingBudget = MAX_TRACK_DIAGNOSTIC_LOGS - diagnosticLinesLogged,
-                            )
-                        send(
-                            SpaceFeedEmission(
-                                phase = SpaceFeedPhase.RESOLVED_UPDATE,
-                                shelves = resolvedEval.feed.shelves,
-                                quickPicks = resolvedEval.quickPicks,
-                                keepListening = resolvedEval.keepListening,
-                                forgottenFavorites = resolvedEval.forgottenFavorites,
-                                stats = resolvedStats,
-                            ),
-                        )
                     }
                 }
 
+                val l5ElapsedMs = (clock() - l5StartedAt).coerceAtLeast(0L)
                 Logger.i(
                     LOG_TAG,
-                    "L5 done spaceId=$spaceId resolvedArtists=${l5Outcome.resolvedArtists} " +
-                        "resolvedTracks=${l5Outcome.resolvedTracks} written=${l5Outcome.writtenRecords} " +
+                    "L5 done spaceId=$spaceId resolvedArtists=$totalResolvedArtists " +
+                        "resolvedTracks=$totalResolvedTracks written=$totalWrittenRecords " +
                         "elapsedMs=$l5ElapsedMs circuitOpen=${resolver.isCircuitOpen}",
                 )
             }
@@ -862,12 +906,9 @@ class SpaceRecEngine(
             }
             val settledGenre = profile?.settledGenre(nowMs, config)
             if (filter.genres.isNotEmpty() && settledGenre != null) {
-                val genreOk =
-                    filter.genres.any { req ->
-                        settledGenre.equals(req, ignoreCase = true) ||
-                            SpaceFilterTaxonomy.tagsMatchRequestedGenre(listOf(settledGenre), req)
-                    }
-                if (!genreOk) return@filter false
+                if (!SpaceGates.tagsMatchAnyRequestedGenre(listOf(settledGenre), filter.genres)) {
+                    return@filter false
+                }
             }
             val track = preloaded.trackClasses[arm.seedVideoId]
             val trackLang = track?.language?.takeIf(String::isNotBlank)
@@ -881,12 +922,9 @@ class SpaceRecEngine(
             val trackGenreRaw = track?.genre?.trim().orEmpty()
             if (filter.genres.isNotEmpty() && trackGenreRaw.isNotEmpty()) {
                 val trackTags = trackGenreRaw.split(',', ';', '|').map(String::trim).filter(String::isNotEmpty)
-                val genreOk =
-                    filter.genres.any { req ->
-                        trackTags.any { it.equals(req, ignoreCase = true) } ||
-                            SpaceFilterTaxonomy.tagsMatchRequestedGenre(trackTags, req)
-                    }
-                if (!genreOk) return@filter false
+                if (!SpaceGates.tagsMatchAnyRequestedGenre(trackTags, filter.genres)) {
+                    return@filter false
+                }
             }
             true
         }
@@ -915,12 +953,9 @@ class SpaceRecEngine(
                 }
                 val settledGenre = profile.settledGenre(nowMs, config)
                 if (filter.genres.isNotEmpty() && settledGenre != null) {
-                    val ok =
-                        filter.genres.any { req ->
-                            settledGenre.equals(req, ignoreCase = true) ||
-                                SpaceFilterTaxonomy.tagsMatchRequestedGenre(listOf(settledGenre), req)
-                        }
-                    if (!ok) return@filter false
+                    if (!SpaceGates.tagsMatchAnyRequestedGenre(listOf(settledGenre), filter.genres)) {
+                        return@filter false
+                    }
                 }
                 true
             }.take(config.artistRadioTopArtists)
@@ -995,16 +1030,10 @@ class SpaceRecEngine(
         val trackGenreRaw = track?.genre?.trim().orEmpty()
         if (trackGenreRaw.isNotEmpty()) {
             val tags = trackGenreRaw.split(',', ';', '|').map(String::trim).filter(String::isNotEmpty)
-            return requestedGenres.any { req ->
-                tags.any { it.equals(req, ignoreCase = true) } ||
-                    SpaceFilterTaxonomy.tagsMatchRequestedGenre(tags, req)
-            }
+            return SpaceGates.tagsMatchAnyRequestedGenre(tags, requestedGenres)
         }
         val settledGenre = artist?.settledGenre(nowMs, config) ?: return false
-        return requestedGenres.any { req ->
-            settledGenre.equals(req, ignoreCase = true) ||
-                SpaceFilterTaxonomy.tagsMatchRequestedGenre(listOf(settledGenre), req)
-        }
+        return SpaceGates.tagsMatchAnyRequestedGenre(listOf(settledGenre), requestedGenres)
     }
 
     private fun isSeedVerifiedForLanguages(
@@ -1260,62 +1289,129 @@ class SpaceRecEngine(
         val gatedQuickPicks = gateLocalShelf(homeInput.localQuickPicks, gates, localContext, requireFullyAccepted = filter.isActive)
         val gatedKeepListening = gateLocalShelf(homeInput.localKeepListening, gates, localContext, requireFullyAccepted = filter.isActive)
         val gatedForgotten = gateLocalShelf(homeInput.localForgottenFavorites, gates, localContext, requireFullyAccepted = filter.isActive)
+        val localUnresolved =
+            (gatedQuickPicks.unresolved + gatedKeepListening.unresolved + gatedForgotten.unresolved)
+                .distinctBy { it.candidate.song.id }
 
         return EvaluationSnapshot(
             gateResult = gateResult,
             ranked = ranked,
             feed = assembled,
-            quickPicks = gatedQuickPicks,
-            keepListening = gatedKeepListening,
-            forgottenFavorites = gatedForgotten,
+            quickPicks = gatedQuickPicks.accepted,
+            keepListening = gatedKeepListening.accepted,
+            forgottenFavorites = gatedForgotten.accepted,
+            localUnresolved = localUnresolved,
         )
     }
+
+    private data class GatedLocalShelf(
+        val accepted: List<SongItem>,
+        val unresolved: List<GatedCandidate>,
+    )
 
     private suspend fun gateLocalShelf(
         songs: List<SongItem>,
         gates: SpaceGates,
         context: GateContext,
         requireFullyAccepted: Boolean,
-    ): List<SongItem> {
-        if (songs.isEmpty()) return emptyList()
+    ): GatedLocalShelf {
+        if (songs.isEmpty()) return GatedLocalShelf(emptyList(), emptyList())
         val candidates = songs.map { CandidateTrack(song = it, sources = setOf(CandidateSource.LOCAL_HISTORY)) }
         val result = gates.evaluate(candidates, context)
-        return result.survivors
-            .filter { !requireFullyAccepted || it.isFullyAccepted }
-            .map { it.candidate.song }
+        val accepted =
+            result.survivors
+                .filter { !requireFullyAccepted || it.isFullyAccepted }
+                .map { it.candidate.song }
+        val unresolved = result.survivors.filter { !it.isFullyAccepted }
+        return GatedLocalShelf(accepted = accepted, unresolved = unresolved)
     }
 
-    private suspend fun runL5Resolution(
+    private data class L5TrackItem(
+        val song: SongItem,
+        val primaryArtistId: String?,
+        val highPriorityForL5: Boolean,
+        val isLocalOrTargetedSearch: Boolean,
+        val score: Double,
+    )
+
+    private data class L5ArtistBatch(
+        val artistKey: String,
+        val tracks: List<L5TrackItem>,
+    )
+
+    private fun buildL5ArtistBatches(
         ranked: List<RankedCandidate>,
+        localUnresolved: List<GatedCandidate>,
+    ): List<L5ArtistBatch> {
+        val byVideoId = LinkedHashMap<String, L5TrackItem>()
+        for (gated in localUnresolved) {
+            val song = gated.candidate.song
+            byVideoId[song.id] =
+                L5TrackItem(
+                    song = song,
+                    primaryArtistId = gated.candidate.primaryArtistId,
+                    highPriorityForL5 = true,
+                    isLocalOrTargetedSearch = true,
+                    score = 1.0,
+                )
+        }
+        for (item in ranked) {
+            if (item.gated.isFullyAccepted) continue
+            val existing = byVideoId[item.song.id]
+            val isTargetedSearch = CandidateSource.SEARCH in item.candidate.sources
+            if (existing == null) {
+                byVideoId[item.song.id] =
+                    L5TrackItem(
+                        song = item.song,
+                        primaryArtistId = item.candidate.primaryArtistId,
+                        highPriorityForL5 = item.gated.highPriorityForL5,
+                        isLocalOrTargetedSearch = isTargetedSearch,
+                        score = item.score,
+                    )
+            } else {
+                byVideoId[item.song.id] =
+                    existing.copy(
+                        highPriorityForL5 = existing.highPriorityForL5 || item.gated.highPriorityForL5,
+                        isLocalOrTargetedSearch = existing.isLocalOrTargetedSearch || isTargetedSearch,
+                        score = maxOf(existing.score, item.score),
+                    )
+            }
+        }
+        if (byVideoId.isEmpty()) return emptyList()
+
+        // Order artist batches so:
+        // 1. User's local-history & Stage C targeted-search artists resolve first (high-relevance to this Space),
+        // 2. MAYBE-high-priority artists next,
+        // 3. highest rank score descending.
+        return byVideoId.values
+            .groupBy { item ->
+                item.primaryArtistId
+                    ?: item.song.artists
+                        .firstOrNull()
+                        ?.name
+                        ?.trim()
+                        ?.lowercase()
+                        .orEmpty()
+            }.filterKeys(String::isNotBlank)
+            .entries
+            .sortedWith(
+                compareByDescending<Map.Entry<String, List<L5TrackItem>>> { (_, list) ->
+                    list.any { it.isLocalOrTargetedSearch }
+                }.thenByDescending { (_, list) ->
+                    list.any { it.highPriorityForL5 }
+                }.thenByDescending { (_, list) ->
+                    list.maxOf { it.score }
+                },
+            ).take(config.maxNetworkClassifyPerRefresh)
+            .map { (key, tracks) -> L5ArtistBatch(artistKey = key, tracks = tracks) }
+    }
+
+    private suspend fun runL5ResolutionWave(
+        artistBatches: List<L5ArtistBatch>,
         filter: SpaceFilterSpec,
         windowMs: Long,
     ): L5Outcome {
-        val unresolved = ranked.filter { !it.gated.isFullyAccepted }
-        if (unresolved.isEmpty()) return L5Outcome()
-
-        // Group unresolved tracks by distinct artist and order:
-        // 1. MAYBE-high-priority first, 2. highest rank score descending.
-        val byArtist =
-            unresolved
-                .groupBy { item ->
-                    item.candidate.primaryArtistId
-                        ?: item.song.artists
-                            .firstOrNull()
-                            ?.name
-                            ?.trim()
-                            ?.lowercase()
-                            .orEmpty()
-                }.filterKeys(String::isNotBlank)
-                .entries
-                .sortedWith(
-                    compareByDescending<Map.Entry<String, List<RankedCandidate>>> { (_, list) ->
-                        list.any { it.gated.highPriorityForL5 }
-                    }.thenByDescending { (_, list) ->
-                        list.maxOf { it.score }
-                    },
-                ).take(config.maxNetworkClassifyPerRefresh)
-
-        if (byArtist.isEmpty()) return L5Outcome()
+        if (artistBatches.isEmpty()) return L5Outcome()
 
         val l5Semaphore = Semaphore(config.classifyNetworkConcurrency)
         val countersMutex = Mutex()
@@ -1325,10 +1421,11 @@ class SpaceRecEngine(
 
         withTimeoutOrNull(windowMs) {
             supervisorScope {
-                byArtist
-                    .map { (_, artistTracks) ->
+                artistBatches
+                    .map { batch ->
                         async {
                             if (resolver.isCircuitOpen) return@async
+                            val artistTracks = batch.tracks
                             val sampleSong = artistTracks.first().song
                             val artist = sampleSong.artists.firstOrNull() ?: return@async
                             val artistId = artist.id?.takeIf(String::isNotBlank)
@@ -1352,7 +1449,9 @@ class SpaceRecEngine(
                                     SpaceLanguageRegistry.canonicalCode(lang) ?: lang
                                 }
 
-                            // Persist artist-level language & genre votes (weight 1.5).
+                            // Persist artist-level language & genre votes.
+                            // A clean, unambiguous Last.fm artist resolution settles artist_profile immediately so
+                            // future tracks by the same artist pass L2 without waiting for multiple refreshes.
                             if (artistId != null &&
                                 (canonicalLangs.isNotEmpty() || artistRes.detectedGenres.isNotEmpty())
                             ) {
@@ -1367,11 +1466,24 @@ class SpaceRecEngine(
                                             genreVotes = emptyMap(),
                                         )
                                 var updated = existing.copy(name = artistName)
+                                val langWeight =
+                                    if (!artistRes.needsTrackDisambiguation && canonicalLangs.size == 1) {
+                                        maxOf(config.voteWeightNetwork, config.artistSettledMinVotes)
+                                    } else {
+                                        config.voteWeightNetwork
+                                    }
                                 for (lang in canonicalLangs) {
-                                    updated = updated.addVote(lang, config.voteWeightNetwork, nowMs)
+                                    updated = updated.addVote(lang, langWeight, nowMs)
                                 }
-                                for (genre in artistRes.detectedGenres) {
-                                    updated = updated.addGenreVote(genre, config.voteWeightNetwork, nowMs)
+                                val genreList = artistRes.detectedGenres.toList()
+                                for ((idx, genre) in genreList.withIndex()) {
+                                    val genreWeight =
+                                        if (!artistRes.needsTrackDisambiguation && idx == 0) {
+                                            maxOf(config.voteWeightNetwork, config.artistSettledMinVotes)
+                                        } else {
+                                            config.voteWeightNetwork
+                                        }
+                                    updated = updated.addGenreVote(genre, genreWeight, nowMs)
                                 }
                                 runCatching {
                                     dao.upsertArtistProfile(updated.toEntity())
@@ -1403,7 +1515,10 @@ class SpaceRecEngine(
                                     localWritten += records.size
                                 }
                             } else if (!resolver.isCircuitOpen) {
-                                val trackCandidates = artistTracks.sortedByDescending { it.score }.take(2)
+                                val trackCandidates =
+                                    artistTracks
+                                        .sortedByDescending { it.score }
+                                        .take(MAX_DISAMBIGUATED_TRACKS_PER_ARTIST)
                                 for (item in trackCandidates) {
                                     if (resolver.isCircuitOpen) break
                                     val trackRes =
@@ -1703,6 +1818,7 @@ class SpaceRecEngine(
         val quickPicks: List<SongItem>,
         val keepListening: List<SongItem>,
         val forgottenFavorites: List<SongItem>,
+        val localUnresolved: List<GatedCandidate> = emptyList(),
     )
 
     private data class L5Outcome(
@@ -1724,6 +1840,8 @@ class SpaceRecEngine(
         const val LOG_TAG = "SpacesRec"
         private const val MAX_PROVENANCE_ENTRIES = 2_000
         private const val MAX_TRACK_DIAGNOSTIC_LOGS = 40
+        private const val L5_EARLY_WAVE_ARTISTS = 16
+        private const val MAX_DISAMBIGUATED_TRACKS_PER_ARTIST = 4
 
         private val EmptyTrackLookup =
             object : TrackClassLookup {

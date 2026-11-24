@@ -885,14 +885,29 @@ class HomeViewModel(
                                                 ) {
                                                     return@collect
                                                 }
-                                                val loadedState = buildSpaceLoadedState(emission, sessionKey)
+                                                val rawLoaded = buildSpaceLoadedState(emission, sessionKey)
+                                                val waitingForMore = rawLoaded.hasNoHomeContent() && emission.l5Pending
+                                                val loadedState =
+                                                    if (waitingForMore) {
+                                                        rawLoaded.copy(
+                                                            isLoading = !isRefresh,
+                                                            isRefreshing = isRefresh,
+                                                            isContentLoading = true,
+                                                        )
+                                                    } else {
+                                                        rawLoaded
+                                                    }
                                                 _uiState.value = loadedState.withoutBlockedContent()
-                                                if (emission.phase == SpaceFeedPhase.FINAL) {
+                                                if (emission.phase == SpaceFeedPhase.FINAL ||
+                                                    emission.phase == SpaceFeedPhase.RESOLVED_UPDATE
+                                                ) {
                                                     allContentReloadRequired = false
-                                                    cacheAllContentState(loadedState)
+                                                    if (!waitingForMore) {
+                                                        cacheAllContentState(loadedState)
+                                                    }
                                                     publishedPrimaryAllContent.value = null
                                                     publishedPrimaryChipContent.value = null
-                                                    if (!completedNotified) {
+                                                    if (!waitingForMore && !completedNotified) {
                                                         completedNotified = true
                                                         scope.launch { onComplete() }
                                                     }

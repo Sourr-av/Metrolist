@@ -221,7 +221,8 @@ class SpaceGates(
     ): GatePipelineResult {
         val strict = evaluate(candidates, context.copy(relaxShownExclusion = false))
         val minBeforeRelax = config.feedTargetSongs / 2
-        if (strict.survivors.size >= minBeforeRelax || context.recentlyShownVideoIds.isEmpty()) {
+        val effectiveCount = if (context.filter.isActive) strict.stats.acceptCount else strict.survivors.size
+        if (effectiveCount >= minBeforeRelax || context.recentlyShownVideoIds.isEmpty()) {
             return strict
         }
         return evaluate(candidates, context.copy(relaxShownExclusion = true))
@@ -255,20 +256,57 @@ class SpaceGates(
             )
         }
 
-        // Artist-level settled genre verdict.
+        // Artist-level genre votes verdict (handles both single-dominant settledGenre and multi-tag subgenres).
         val artistId = candidate.primaryArtistId
         if (!artistId.isNullOrBlank()) {
-            val artistSettledGenre = artistProfileLookup.getArtistProfile(artistId)?.settledGenre(nowMs, config)
-            if (!artistSettledGenre.isNullOrBlank()) {
-                val verdict =
-                    if (tagsMatchAnyRequestedGenre(listOf(artistSettledGenre), requestedGenres)) {
-                        GateVerdict.ACCEPT
-                    } else {
-                        GateVerdict.REJECT
+            val profile = artistProfileLookup.getArtistProfile(artistId)
+            val ttlMs = config.artistProfileTtlDays.toLong() * SpaceRecConfig.MILLIS_PER_DAY
+            if (profile != null && nowMs - profile.updatedAt <= ttlMs) {
+                val totalGenreVotes = profile.totalGenreVotes
+                if (totalGenreVotes >= config.artistSettledMinVotes && totalGenreVotes > 0.0) {
+                    val matchingVotes =
+                        profile.genreVotes.entries
+                            .filter { (genreSlug, _) -> tagsMatchAnyRequestedGenre(listOf(genreSlug), requestedGenres) }
+                            .sumOf { it.value }
+                    val settledGenre = profile.settledGenre(nowMs, config)
+                    when {
+                        settledGenre != null && tagsMatchAnyRequestedGenre(listOf(settledGenre), requestedGenres) -> {
+                            return GenreGateEvaluation(
+                                verdict = GateVerdict.ACCEPT,
+                                rule = GenreAcceptanceRule.ARTIST_PROFILE_GENRE_VOTES,
+                                highPriorityForL5 = false,
+                            )
+                        }
+
+                        matchingVotes >= config.artistSettledMinVotes * 0.5 &&
+                            matchingVotes / totalGenreVotes >= MULTI_GENRE_ACCEPT_MIN_SHARE -> {
+                            return GenreGateEvaluation(
+                                verdict = GateVerdict.ACCEPT,
+                                rule = GenreAcceptanceRule.ARTIST_PROFILE_GENRE_VOTES,
+                                highPriorityForL5 = false,
+                            )
+                        }
+
+                        matchingVotes == 0.0 && settledGenre != null -> {
+                            return GenreGateEvaluation(
+                                verdict = GateVerdict.REJECT,
+                                rule = GenreAcceptanceRule.ARTIST_PROFILE_GENRE_VOTES,
+                                highPriorityForL5 = false,
+                            )
+                        }
                     }
+                }
+            }
+        }
+
+        // Song-level metadata genre if YouTube / library provided one directly.
+        val songGenreRaw = candidate.song.genre?.trim().orEmpty()
+        if (songGenreRaw.isNotEmpty()) {
+            val songTags = songGenreRaw.split(',', ';', '|').map(String::trim).filter(String::isNotEmpty)
+            if (tagsMatchAnyRequestedGenre(songTags, requestedGenres)) {
                 return GenreGateEvaluation(
-                    verdict = verdict,
-                    rule = GenreAcceptanceRule.ARTIST_PROFILE_GENRE_VOTES,
+                    verdict = GateVerdict.ACCEPT,
+                    rule = GenreAcceptanceRule.TRACK_CLASS_GENRE,
                     highPriorityForL5 = false,
                 )
             }
@@ -297,27 +335,41 @@ class SpaceGates(
         )
     }
 
-    private fun tagsMatchAnyRequestedGenre(
-        tags: List<String>,
-        requestedGenres: List<String>,
-    ): Boolean =
-        requestedGenres.any { requested ->
-            if (requested.equals(SpaceLanguageRegistry.INSTRUMENTAL_SLUG, ignoreCase = true)) {
-                tags.any { tag ->
-                    val norm = SpaceFilterTaxonomy.normalizeTag(tag)
-                    norm == "instrumental" || norm.contains("instrumental") || norm == "no vocals"
-                }
-            } else {
-                tags.any { tag -> tag.equals(requested, ignoreCase = true) } ||
-                    SpaceFilterTaxonomy.tagsMatchRequestedGenre(tags, requested)
-            }
-        }
-
     companion object {
+        private const val MULTI_GENRE_ACCEPT_MIN_SHARE = 0.35
+
         private val NoOpArtistProfileLookup =
             object : ArtistProfileLookup {
                 override suspend fun getArtistProfile(artistId: String): ArtistProfileRecord? = null
             }
+
+        internal fun tagsMatchAnyRequestedGenre(
+            tags: List<String>,
+            requestedGenres: List<String>,
+        ): Boolean =
+            requestedGenres.any { requested ->
+                if (requested.equals(SpaceLanguageRegistry.INSTRUMENTAL_SLUG, ignoreCase = true)) {
+                    tags.any { tag ->
+                        val norm = SpaceFilterTaxonomy.normalizeTag(tag)
+                        norm == "instrumental" || norm.contains("instrumental") || norm == "no vocals"
+                    }
+                } else {
+                    tags.any { tag ->
+                        tag.equals(requested, ignoreCase = true) ||
+                            canonicalGenreMatchesRequested(tag, requested)
+                    } ||
+                        SpaceFilterTaxonomy.tagsMatchRequestedGenre(tags, requested)
+                }
+            }
+
+        private fun canonicalGenreMatchesRequested(
+            storedGenreId: String,
+            requestedGenreId: String,
+        ): Boolean {
+            val storedOpt = SpaceFilterTaxonomy.genreOption(storedGenreId.trim().lowercase()) ?: return false
+            val reqId = requestedGenreId.trim().lowercase()
+            return storedOpt.id == reqId || storedOpt.parentId == reqId
+        }
 
         fun isSongArtistKnown(
             song: SongItem,

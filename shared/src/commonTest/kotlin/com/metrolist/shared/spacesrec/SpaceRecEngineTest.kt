@@ -651,6 +651,68 @@ class SpaceRecEngineTest {
             assertFalse("cached_maybe" in finalIds)
             assertTrue(liveMaybes.none { it.id in finalIds })
         }
+
+    @Test
+    fun l5ResolvesLocalShelvesSetsPendingFlagAndSettlesArtistProfile() =
+        runTest {
+            val dao = FakeSpaceRecDao()
+            val resolver =
+                FakeSpaceTagResolver(
+                    isAvailable = true,
+                    delayMs = 150L,
+                    artistResults =
+                        mapOf(
+                            "a_kendrick" to
+                                ArtistTagResolution(
+                                    artistId = "a_kendrick",
+                                    artistName = "Kendrick Lamar",
+                                    detectedLanguages = setOf("en"),
+                                    detectedGenres = setOf("hip_hop", "hip_hop_trap"),
+                                    needsTrackDisambiguation = false,
+                                ),
+                        ),
+                )
+            val engine =
+                SpaceRecEngine(
+                    dao = dao,
+                    resolver = resolver,
+                    clock = { baseTimeMs + currentTime },
+                    random = Random(14),
+                    youtubeSource = FakeSpaceYouTubeSource(),
+                    isBlocked = { false },
+                )
+
+            val localRap1 = song("rap_local_1", "HUMBLE.", artistId = "a_kendrick", artistName = "Kendrick Lamar")
+            val localRap2 = song("rap_local_2", "DNA.", artistId = "a_kendrick", artistName = "Kendrick Lamar")
+
+            val emissions =
+                engine
+                    .refresh(
+                        spaceId = "space_english_rap",
+                        filter = SpaceFilterSpec(languages = listOf("english"), genres = listOf("hip_hop")),
+                        homeInput =
+                            SpaceHomeInput(
+                                primarySections = emptyList(),
+                                localQuickPicks = listOf(localRap1),
+                                localKeepListening = listOf(localRap2),
+                                shelfLabels = defaultLabels,
+                            ),
+                    ).toList()
+
+            val finalEmission = emissions.first { it.phase == SpaceFeedPhase.FINAL }
+            assertTrue(finalEmission.l5Pending, "FINAL must signal l5Pending=true while L5 is resolving local MAYBE tracks")
+            assertTrue(finalEmission.quickPicks.isEmpty())
+
+            val resolvedEmission = emissions.last { it.phase == SpaceFeedPhase.RESOLVED_UPDATE }
+            assertFalse(resolvedEmission.l5Pending)
+            assertEquals(listOf("rap_local_1"), resolvedEmission.quickPicks.map { it.id })
+            assertEquals(listOf("rap_local_2"), resolvedEmission.keepListening.map { it.id })
+
+            // Clean L5 artist resolution must settle artist_profile immediately so future tracks pass L2.
+            val profile = dao.artistProfiles["a_kendrick"]
+            assertNotNull(profile)
+            assertTrue(profile.totalVotes >= 3.0f, "Expected settled artist profile votes, got ${profile.totalVotes}")
+        }
 }
 
 private class FakeSpaceRecDao(
