@@ -34,6 +34,7 @@ class HistorySchemaMigrationTest {
                 exec("ALTER TABLE event DROP COLUMN remoteDateLabel")
                 exec("ALTER TABLE event DROP COLUMN remoteOrder")
                 exec("ALTER TABLE lyrics DROP COLUMN isUserSelected")
+                exec("ALTER TABLE artist_profile DROP COLUMN genreVotesJson")
                 exec("DROP INDEX index_event_timestamp")
                 exec("DROP TABLE history_stat_exclusion")
                 val schemaPath =

@@ -18,6 +18,7 @@ import com.metrolist.shared.model.HomeSection
 import com.metrolist.shared.model.RadioQueuePage
 import com.metrolist.shared.model.SongItem
 import com.metrolist.shared.settings.SpaceFilterSpec
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.currentTime
@@ -30,6 +31,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class SpaceRecEngineTest {
     private val baseTimeMs = 1_700_000_000_000L
 
@@ -393,7 +395,7 @@ class SpaceRecEngineTest {
             val radioSong = song("r_1", "മലയാളം റേഡിയോ", artistId = "a_r1", durationSec = null)
             dao.songDurations["r_1"] = 180 // fallback duration from song table
 
-            val yt = FakeSpaceYouTubeSource(radioSongs = listOf(radioSong))
+            val yt = FakeSpaceYouTubeSource(radioSongsBySeed = mapOf("v_seed" to listOf(radioSong)))
             val engine =
                 SpaceRecEngine(
                     dao = dao,
@@ -547,6 +549,7 @@ private class FakeSpaceRecDao(
 private class FakeSpaceYouTubeSource(
     private val hangForever: Boolean = false,
     private val radioSongs: List<SongItem> = emptyList(),
+    private val radioSongsBySeed: Map<String, List<SongItem>> = emptyMap(),
     private val searchSongsList: List<SongItem> = emptyList(),
 ) : SpaceYouTubeSource {
     var callCount = 0
@@ -566,7 +569,8 @@ private class FakeSpaceYouTubeSource(
     ): RadioQueuePage {
         callCount++
         if (hangForever) delay(60_000L)
-        return RadioQueuePage(songs = radioSongs, chips = emptyList(), continuation = null)
+        val songs = if (radioSongsBySeed.isNotEmpty()) radioSongsBySeed[videoId].orEmpty() else radioSongs
+        return RadioQueuePage(songs = songs, chips = emptyList(), continuation = null)
     }
 
     override suspend fun continueRadioQueue(continuation: String): RadioQueuePage {

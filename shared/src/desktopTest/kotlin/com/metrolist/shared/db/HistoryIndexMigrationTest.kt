@@ -39,6 +39,7 @@ class HistoryIndexMigrationTest {
                 exec("ALTER TABLE event DROP COLUMN remoteDateLabel")
                 exec("ALTER TABLE event DROP COLUMN remoteOrder")
                 exec("ALTER TABLE lyrics DROP COLUMN isUserSelected")
+                exec("ALTER TABLE artist_profile DROP COLUMN genreVotesJson")
                 exec("DROP INDEX index_playlist_browseId")
                 exec("DROP INDEX index_history_provenance_legacyId_songId")
                 val schema =
