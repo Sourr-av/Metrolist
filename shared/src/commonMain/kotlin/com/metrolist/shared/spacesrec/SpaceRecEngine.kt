@@ -290,7 +290,7 @@ class SpaceRecEngine(
                         // A2: Seeded radios (startRadioQueue + 1 continueRadioQueue).
                         for (seed in stageASeeds) {
                             launch {
-                                val tracks = fetchSeededRadio(seed, radioSemaphore)
+                                val tracks = fetchSeededRadio(seed, radioSemaphore, normalizedFilter, refreshStartMs)
                                 if (tracks.isNotEmpty()) {
                                     candidateMutex.withLock {
                                         candidatePool.addAll(tracks)
@@ -340,6 +340,7 @@ class SpaceRecEngine(
                     filter = normalizedFilter,
                     dbInputs = dbInputs,
                     nowMs = clock(),
+                    cachedPayload = cachedPayload,
                 )
             recordFeedProvenance(spaceId, partialEval)
             send(
@@ -364,9 +365,9 @@ class SpaceRecEngine(
 
             // --- Step 4: Stage B (additional seeds + Home cards) & Stage C (cold-start search) ---
             var hardDeadlineHit = false
-            var currentSurvivorCount = partialEval.gateResult.survivors.size
+            var currentSurvivorCount = partialEval.gateResult.survivors.count { it.isFullyAccepted }
 
-            // Stage B: run when survivors < feedTargetSongs and budget remains before hardDeadlineMs.
+            // Stage B: run when verified ACCEPT survivors < feedTargetSongs and budget remains before hardDeadlineMs.
             val remainingForStageB = (config.hardDeadlineMs - (clock() - refreshStartMs)).coerceAtLeast(0L)
             if (currentSurvivorCount < config.feedTargetSongs && remainingForStageB > 0L) {
                 val stageBSeeds =
@@ -391,7 +392,7 @@ class SpaceRecEngine(
                             supervisorScope {
                                 for (seed in stageBSeeds) {
                                     launch {
-                                        val tracks = fetchSeededRadio(seed, radioSemaphore)
+                                        val tracks = fetchSeededRadio(seed, radioSemaphore, normalizedFilter, clock())
                                         if (tracks.isNotEmpty()) {
                                             candidateMutex.withLock { candidatePool.addAll(tracks) }
                                         }
@@ -431,7 +432,7 @@ class SpaceRecEngine(
                     if (stageBCompleted == null) hardDeadlineHit = true
                 }
 
-                // Re-estimate survivors before deciding whether Stage C cold-start search is needed.
+                // Re-estimate verified ACCEPT survivors before deciding whether Stage C cold-start search is needed.
                 val postBSnapshot = candidateMutex.withLock { candidatePool.toList() }
                 if (postBSnapshot.size > stageASnapshot.size) {
                     val postBPreload = preloadForCandidates(postBSnapshot, homeInput)
@@ -441,7 +442,8 @@ class SpaceRecEngine(
                             .evaluateWithShownRelaxation(
                                 postBSnapshot,
                                 buildGateContext(normalizedFilter, dbInputs, clock()),
-                            ).survivors.size
+                            ).survivors
+                            .count { it.isFullyAccepted }
                 }
             }
 
@@ -496,6 +498,7 @@ class SpaceRecEngine(
                                                             sources = setOf(CandidateSource.SEED_RADIO),
                                                             seedArtistId = seedArtist?.id,
                                                             seedArtistName = seedArtist?.name,
+                                                            seedVideoId = seedSong.id,
                                                         )
                                                     }
                                                 candidateMutex.withLock { candidatePool.addAll(mapped) }
@@ -511,6 +514,7 @@ class SpaceRecEngine(
             }
 
             // --- Step 5: FINAL evaluation, persistence, provenance, and logging ---
+            var diagnosticLinesLogged = 0
             val finalCandidates = candidateMutex.withLock { candidatePool.toList() }
             val finalHomeShelves = candidateMutex.withLock { homeShelves.toList() }
             val finalNowMs = clock()
@@ -522,6 +526,7 @@ class SpaceRecEngine(
                     filter = normalizedFilter,
                     dbInputs = dbInputs,
                     nowMs = finalNowMs,
+                    cachedPayload = cachedPayload,
                 )
 
             recordFeedProvenance(spaceId, finalEval)
@@ -531,6 +536,7 @@ class SpaceRecEngine(
                 nowMs = finalNowMs,
                 eval = finalEval,
                 usedSeedArms = usedSeedArms.values.toList(),
+                hasExistingCache = cachedPayload != null,
             )
 
             val finalStats =
@@ -544,6 +550,13 @@ class SpaceRecEngine(
                     hardDeadlineHit = hardDeadlineHit,
                 )
             logSummary(finalStats)
+            diagnosticLinesLogged +=
+                logAssembledTrackDiagnostics(
+                    spaceId = spaceId,
+                    phase = SpaceFeedPhase.FINAL,
+                    eval = finalEval,
+                    remainingBudget = MAX_TRACK_DIAGNOSTIC_LOGS - diagnosticLinesLogged,
+                )
 
             send(
                 SpaceFeedEmission(
@@ -578,6 +591,7 @@ class SpaceRecEngine(
                             filter = normalizedFilter,
                             dbInputs = dbInputs,
                             nowMs = updatedNowMs,
+                            cachedPayload = cachedPayload,
                         )
                     val verdictsChanged =
                         resolvedEval.gateResult.stats.acceptCount != finalEval.gateResult.stats.acceptCount ||
@@ -587,7 +601,9 @@ class SpaceRecEngine(
 
                     if (verdictsChanged) {
                         recordFeedProvenance(spaceId, resolvedEval)
-                        persistFeedCacheOnly(spaceId, nextRefreshSeq, updatedNowMs, resolvedEval)
+                        if (resolvedEval.feed.songs.isNotEmpty() || cachedPayload == null) {
+                            persistFeedCacheOnly(spaceId, nextRefreshSeq, updatedNowMs, resolvedEval)
+                        }
                         val resolvedStats =
                             buildStats(
                                 spaceId = spaceId,
@@ -600,6 +616,13 @@ class SpaceRecEngine(
                                 l5ResolvedArtists = l5Outcome.resolvedArtists,
                                 l5ResolvedTracks = l5Outcome.resolvedTracks,
                                 l5ElapsedMs = l5ElapsedMs,
+                            )
+                        diagnosticLinesLogged +=
+                            logAssembledTrackDiagnostics(
+                                spaceId = spaceId,
+                                phase = SpaceFeedPhase.RESOLVED_UPDATE,
+                                eval = resolvedEval,
+                                remainingBudget = MAX_TRACK_DIAGNOSTIC_LOGS - diagnosticLinesLogged,
                             )
                         send(
                             SpaceFeedEmission(
@@ -848,8 +871,22 @@ class SpaceRecEngine(
             }
             val track = preloaded.trackClasses[arm.seedVideoId]
             val trackLang = track?.language?.takeIf(String::isNotBlank)
-            if (!langTargets.isEmpty && trackLang != null && !langTargets.matchesCode(trackLang)) {
+            if (!langTargets.isEmpty &&
+                trackLang != null &&
+                track.languageConfidence >= config.l3AcceptConfidence &&
+                !langTargets.matchesCode(trackLang)
+            ) {
                 return@filter false
+            }
+            val trackGenreRaw = track?.genre?.trim().orEmpty()
+            if (filter.genres.isNotEmpty() && trackGenreRaw.isNotEmpty()) {
+                val trackTags = trackGenreRaw.split(',', ';', '|').map(String::trim).filter(String::isNotEmpty)
+                val genreOk =
+                    filter.genres.any { req ->
+                        trackTags.any { it.equals(req, ignoreCase = true) } ||
+                            SpaceFilterTaxonomy.tagsMatchRequestedGenre(trackTags, req)
+                    }
+                if (!genreOk) return@filter false
             }
             true
         }
@@ -892,6 +929,8 @@ class SpaceRecEngine(
     private suspend fun fetchSeededRadio(
         seed: SeedArmState,
         semaphore: Semaphore,
+        filter: SpaceFilterSpec,
+        nowMs: Long,
     ): List<CandidateTrack> {
         val page1 =
             semaphore.withPermit {
@@ -918,6 +957,11 @@ class SpaceRecEngine(
             }
         }
 
+        val seedTrackClass = runCatchingNonCancellable { dao.getTrackClass(seed.seedVideoId)?.toRecord() }
+        val seedArtistProfile = runCatchingNonCancellable { dao.getArtistProfile(seed.artistId)?.toRecord() }
+        val seedVerifiedGenre = isSeedVerifiedForGenres(seedTrackClass, seedArtistProfile, filter.genres, nowMs)
+        val seedVerifiedLanguage = isSeedVerifiedForLanguages(seedTrackClass, seedArtistProfile, filter.languages, nowMs)
+
         val seedArtistName =
             allSongs
                 .firstOrNull { song -> song.artists.any { it.id == seed.artistId } }
@@ -925,16 +969,58 @@ class SpaceRecEngine(
                 ?.firstOrNull { it.id == seed.artistId }
                 ?.name
 
+        // Rule (2): seedGenreAccepted / seedLanguageAccepted apply ONLY to the seed track itself,
+        // never to tracks pulled from its radio.
         return allSongs.map { song ->
+            val isSeedTrack = song.id == seed.seedVideoId
             CandidateTrack(
                 song = song,
                 sources = setOf(CandidateSource.SEED_RADIO),
                 seedArtistId = seed.artistId,
                 seedArtistName = seedArtistName,
-                seedLanguageAccepted = true,
-                seedGenreAccepted = true,
+                seedVideoId = seed.seedVideoId,
+                seedLanguageAccepted = isSeedTrack && seedVerifiedLanguage,
+                seedGenreAccepted = isSeedTrack && seedVerifiedGenre,
             )
         }
+    }
+
+    private fun isSeedVerifiedForGenres(
+        track: TrackClassRecord?,
+        artist: ArtistProfileRecord?,
+        requestedGenres: List<String>,
+        nowMs: Long,
+    ): Boolean {
+        if (requestedGenres.isEmpty()) return false
+        val trackGenreRaw = track?.genre?.trim().orEmpty()
+        if (trackGenreRaw.isNotEmpty()) {
+            val tags = trackGenreRaw.split(',', ';', '|').map(String::trim).filter(String::isNotEmpty)
+            return requestedGenres.any { req ->
+                tags.any { it.equals(req, ignoreCase = true) } ||
+                    SpaceFilterTaxonomy.tagsMatchRequestedGenre(tags, req)
+            }
+        }
+        val settledGenre = artist?.settledGenre(nowMs, config) ?: return false
+        return requestedGenres.any { req ->
+            settledGenre.equals(req, ignoreCase = true) ||
+                SpaceFilterTaxonomy.tagsMatchRequestedGenre(listOf(settledGenre), req)
+        }
+    }
+
+    private fun isSeedVerifiedForLanguages(
+        track: TrackClassRecord?,
+        artist: ArtistProfileRecord?,
+        requestedLanguages: List<String>,
+        nowMs: Long,
+    ): Boolean {
+        val targets = SpaceLanguageRegistry.parseTargets(requestedLanguages)
+        if (targets.isEmpty) return false
+        val trackLang = track?.language?.takeIf(String::isNotBlank)
+        if (trackLang != null && track.languageConfidence >= config.l3AcceptConfidence) {
+            return targets.matchesCode(trackLang)
+        }
+        val settledLang = artist?.settledLanguage(nowMs, config) ?: return false
+        return targets.matchesCode(settledLang)
     }
 
     private fun selectStageBSeeds(
@@ -1092,6 +1178,7 @@ class SpaceRecEngine(
         filter: SpaceFilterSpec,
         dbInputs: LoadedDbInputs,
         nowMs: Long,
+        cachedPayload: CachedSpaceFeedPayload? = null,
     ): EvaluationSnapshot {
         val preloaded = preloadForCandidates(candidates, homeInput)
         val gates = createGates(preloaded)
@@ -1104,21 +1191,75 @@ class SpaceRecEngine(
                 everPlayedVideoIds = dbInputs.everPlayedIds,
                 config = config,
             )
-        val assembled =
+        // Rule (1): Constrained Spaces never include MAYBE tracks in assembled feeds;
+        // tracks must resolve to ACCEPT (including via L5 -> RESOLVED_UPDATE).
+        val allowMaybe = !filter.isActive
+        var assembled =
             FeedAssembler.assemble(
                 ranked = ranked,
                 homeShelves = homeShelves,
                 shelfLabels = homeInput.shelfLabels,
                 recentlyHeardVideoIds = dbInputs.recentlyHeardIds,
+                allowMaybe = allowMaybe,
                 config = config,
                 random = random,
             )
 
-        // Local history shelves are exempt from heard exclusion (CandidateSource.LOCAL_HISTORY) and shown exclusion.
+        // Rule (4): If the assembled feed is below the minimum size, backfill with verified ACCEPT
+        // tracks from the Space feed cache (re-gated against current metadata) before ever using MAYBE.
+        if (assembled.songs.size < config.minSongsBeforeMaybeAllowed && cachedPayload != null) {
+            val liveIds = candidates.mapTo(hashSetOf()) { it.song.id }
+            val cachedSongs =
+                cachedPayload.shelves
+                    .flatMap { it.songs }
+                    .distinctBy { it.id }
+                    .filter { it.id !in liveIds }
+            if (cachedSongs.isNotEmpty()) {
+                val cachedCandidates =
+                    cachedSongs.map { song ->
+                        CandidateTrack(song = song, sources = setOf(CandidateSource.HOME))
+                    }
+                val backfillPreload =
+                    SpaceRecDbAdapter.preload(
+                        dao = dao,
+                        videoIds = cachedSongs.map { it.id },
+                        artistIds = cachedSongs.flatMap { s -> s.artists.mapNotNull { it.id } },
+                    )
+                val backfillGates = createGates(backfillPreload)
+                val backfillResult =
+                    backfillGates.evaluate(
+                        candidates = cachedCandidates,
+                        context = gateContext.copy(relaxShownExclusion = true),
+                    )
+                val verifiedBackfill = backfillResult.survivors.filter { it.isFullyAccepted }
+                if (verifiedBackfill.isNotEmpty()) {
+                    val rankedBackfill =
+                        SpaceRanker.rank(
+                            candidates = verifiedBackfill,
+                            affinityTable = dbInputs.affinityTable,
+                            everPlayedVideoIds = dbInputs.everPlayedIds,
+                            config = config,
+                        )
+                    assembled =
+                        FeedAssembler.assemble(
+                            ranked = ranked + rankedBackfill,
+                            homeShelves = homeShelves,
+                            shelfLabels = homeInput.shelfLabels,
+                            recentlyHeardVideoIds = dbInputs.recentlyHeardIds,
+                            allowMaybe = allowMaybe,
+                            config = config,
+                            random = random,
+                        )
+                }
+            }
+        }
+
+        // Local history shelves are exempt from heard exclusion (CandidateSource.LOCAL_HISTORY) and shown exclusion,
+        // and obey Rule (1): only verified ACCEPT tracks when the Space has active constraints.
         val localContext = gateContext.copy(relaxShownExclusion = true)
-        val gatedQuickPicks = gateLocalShelf(homeInput.localQuickPicks, gates, localContext)
-        val gatedKeepListening = gateLocalShelf(homeInput.localKeepListening, gates, localContext)
-        val gatedForgotten = gateLocalShelf(homeInput.localForgottenFavorites, gates, localContext)
+        val gatedQuickPicks = gateLocalShelf(homeInput.localQuickPicks, gates, localContext, requireFullyAccepted = filter.isActive)
+        val gatedKeepListening = gateLocalShelf(homeInput.localKeepListening, gates, localContext, requireFullyAccepted = filter.isActive)
+        val gatedForgotten = gateLocalShelf(homeInput.localForgottenFavorites, gates, localContext, requireFullyAccepted = filter.isActive)
 
         return EvaluationSnapshot(
             gateResult = gateResult,
@@ -1134,11 +1275,14 @@ class SpaceRecEngine(
         songs: List<SongItem>,
         gates: SpaceGates,
         context: GateContext,
+        requireFullyAccepted: Boolean,
     ): List<SongItem> {
         if (songs.isEmpty()) return emptyList()
         val candidates = songs.map { CandidateTrack(song = it, sources = setOf(CandidateSource.LOCAL_HISTORY)) }
         val result = gates.evaluate(candidates, context)
-        return result.survivors.map { it.candidate.song }
+        return result.survivors
+            .filter { !requireFullyAccepted || it.isFullyAccepted }
+            .map { it.candidate.song }
     }
 
     private suspend fun runL5Resolution(
@@ -1310,6 +1454,7 @@ class SpaceRecEngine(
         nowMs: Long,
         eval: EvaluationSnapshot,
         usedSeedArms: List<SeedArmState>,
+        hasExistingCache: Boolean,
     ) {
         val shownSongs =
             buildSet {
@@ -1339,7 +1484,9 @@ class SpaceRecEngine(
             runCatching { dao.upsertSeedArms(updatedArms) }
         }
 
-        persistFeedCacheOnly(spaceId, refreshSeq, nowMs, eval)
+        if (eval.feed.songs.isNotEmpty() || !hasExistingCache) {
+            persistFeedCacheOnly(spaceId, refreshSeq, nowMs, eval)
+        }
     }
 
     private suspend fun persistFeedCacheOnly(
@@ -1481,6 +1628,38 @@ class SpaceRecEngine(
             circuitOpen = resolver.isCircuitOpen,
         )
 
+    private fun logAssembledTrackDiagnostics(
+        spaceId: String,
+        phase: SpaceFeedPhase,
+        eval: EvaluationSnapshot,
+        remainingBudget: Int,
+    ): Int {
+        if (remainingBudget <= 0 || eval.feed.songs.isEmpty()) return 0
+        val tracksToLog = eval.feed.songs.take(remainingBudget)
+        for (item in tracksToLog) {
+            val lang = item.gated.languageResult
+            val langRule =
+                buildString {
+                    append(lang.step.name)
+                    append('(')
+                    append(lang.verdict.name)
+                    if (!lang.detectedLanguage.isNullOrBlank()) {
+                        append(',')
+                        append(lang.detectedLanguage)
+                    }
+                    append(')')
+                }
+            val genreRule = item.gated.genreRule.label
+            val sources = item.candidate.sources.joinToString(",") { it.name }
+            Logger.d(
+                LOG_TAG,
+                "track spaceId=$spaceId phase=$phase videoId=${item.song.id} " +
+                    "genreRule=$genreRule langRule=$langRule sources=$sources",
+            )
+        }
+        return tracksToLog.size
+    }
+
     private fun logSummary(stats: SpaceRefreshStats) {
         val familiarPct = (stats.familiarShare * 100.0).roundToInt()
         Logger.i(
@@ -1544,6 +1723,7 @@ class SpaceRecEngine(
     companion object {
         const val LOG_TAG = "SpacesRec"
         private const val MAX_PROVENANCE_ENTRIES = 2_000
+        private const val MAX_TRACK_DIAGNOSTIC_LOGS = 40
 
         private val EmptyTrackLookup =
             object : TrackClassLookup {

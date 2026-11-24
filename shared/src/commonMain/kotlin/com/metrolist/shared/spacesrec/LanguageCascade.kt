@@ -48,11 +48,22 @@ class LanguageCascade(
         val cachedTrack = trackClassLookup.getTrackClass(song.id)
         val cachedLang = cachedTrack?.language?.takeIf(String::isNotBlank)
         if (cachedLang != null) {
+            val canonical = SpaceLanguageRegistry.canonicalCode(cachedLang) ?: cachedLang.lowercase()
+            // Rule (3): low-confidence language classification must be MAYBE, never pass as ACCEPT.
+            if (cachedTrack.languageConfidence < config.l3AcceptConfidence) {
+                return LanguageCascadeResult(
+                    verdict = GateVerdict.MAYBE,
+                    step = LanguageStep.L0_TRACK_CACHE,
+                    detectedLanguage = canonical,
+                    confidence = cachedTrack.languageConfidence,
+                    highPriorityForL5 = true,
+                )
+            }
             val verdict = if (targets.matchesCode(cachedLang)) GateVerdict.ACCEPT else GateVerdict.REJECT
             return LanguageCascadeResult(
                 verdict = verdict,
                 step = LanguageStep.L0_TRACK_CACHE,
-                detectedLanguage = SpaceLanguageRegistry.canonicalCode(cachedLang) ?: cachedLang.lowercase(),
+                detectedLanguage = canonical,
                 confidence = cachedTrack.languageConfidence,
             )
         }
@@ -170,6 +181,14 @@ class LanguageCascade(
                     confidence = onDevice.confidence,
                 )
             }
+            // Rule (3): low-confidence on-device detection must be MAYBE, never pass as ACCEPT.
+            return LanguageCascadeResult(
+                verdict = GateVerdict.MAYBE,
+                step = LanguageStep.L3_ON_DEVICE,
+                detectedLanguage = detectedCode,
+                confidence = onDevice.confidence,
+                highPriorityForL5 = candidate.seedLanguageAccepted,
+            )
         }
 
         // --- L4: provenance (seedLanguageAccepted -> MAYBE with high L5 priority, never ACCEPT) ---

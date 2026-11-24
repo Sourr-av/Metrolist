@@ -435,6 +435,222 @@ class SpaceRecEngineTest {
             assertEquals(1, updatedArm.completions)
             assertEquals(0, updatedArm.skips)
         }
+
+    @Test
+    fun rule1MaybeTracksExcludedFromFinalAndIncludedOnlyInResolvedUpdateAfterL5Accepts() =
+        runTest {
+            val dao = FakeSpaceRecDao()
+            val yt = FakeSpaceYouTubeSource()
+            val resolver =
+                FakeSpaceTagResolver(
+                    isAvailable = true,
+                    delayMs = 200L,
+                    artistResults =
+                        mapOf(
+                            "a_vgm" to
+                                ArtistTagResolution(
+                                    artistId = "a_vgm",
+                                    artistName = "Nobuo Uematsu",
+                                    detectedLanguages = setOf("en"),
+                                    detectedGenres = setOf("soundtracks_video_game"),
+                                    needsTrackDisambiguation = false,
+                                ),
+                            "a_rap" to
+                                ArtistTagResolution(
+                                    artistId = "a_rap",
+                                    artistName = "Rap Artist",
+                                    detectedLanguages = setOf("en"),
+                                    detectedGenres = setOf("hip_hop"),
+                                    needsTrackDisambiguation = false,
+                                ),
+                            "a_movie" to
+                                ArtistTagResolution(
+                                    artistId = "a_movie",
+                                    artistName = "Film Composer",
+                                    detectedLanguages = setOf("hi"),
+                                    detectedGenres = setOf("soundtracks_film"),
+                                    needsTrackDisambiguation = false,
+                                ),
+                        ),
+                )
+            val engine =
+                SpaceRecEngine(
+                    dao = dao,
+                    resolver = resolver,
+                    clock = { baseTimeMs + currentTime },
+                    random = Random(11),
+                    youtubeSource = yt,
+                    isBlocked = { false },
+                )
+
+            val vgmTrack = song("vgm_1", "One Winged Angel", artistId = "a_vgm", artistName = "Nobuo Uematsu")
+            val rapTrack = song("rap_1", "Street Anthem", artistId = "a_rap", artistName = "Rap Artist")
+            val movieTrack = song("movie_1", "Bollywood Score", artistId = "a_movie", artistName = "Film Composer")
+            val stillMaybeTrack = song("still_maybe_1", "Mystery Track", artistId = "a_unknown", artistName = "Unknown")
+
+            val emissions =
+                engine
+                    .refresh(
+                        spaceId = "space_vgm",
+                        filter = SpaceFilterSpec(languages = listOf("english"), genres = listOf("soundtracks_video_game")),
+                        homeInput =
+                            SpaceHomeInput(
+                                primarySections =
+                                    listOf(HomeSection("Home", listOf(vgmTrack, rapTrack, movieTrack, stillMaybeTrack))),
+                                localQuickPicks = listOf(rapTrack, stillMaybeTrack),
+                                shelfLabels = defaultLabels,
+                            ),
+                    ).toList()
+
+            assertEquals(
+                listOf(SpaceFeedPhase.PARTIAL, SpaceFeedPhase.FINAL, SpaceFeedPhase.RESOLVED_UPDATE),
+                emissions.map { it.phase },
+            )
+
+            // PARTIAL and FINAL must contain ZERO unverified MAYBE tracks (neither in shelves nor local shelves).
+            val partialEmission = emissions[0]
+            val finalEmission = emissions[1]
+            assertTrue(partialEmission.shelves.flatMap { it.songs }.isEmpty())
+            assertTrue(finalEmission.shelves.flatMap { it.songs }.isEmpty())
+            assertTrue(finalEmission.quickPicks.isEmpty())
+
+            // RESOLVED_UPDATE includes ONLY vgm_1 after L5 verifies it to ACCEPT; rap, movie, and still-MAYBE remain excluded.
+            val resolvedEmission = emissions[2]
+            val resolvedSongIds = resolvedEmission.shelves.flatMap { it.songs }.map { it.id }
+            assertEquals(listOf("vgm_1"), resolvedSongIds)
+            assertTrue(resolvedEmission.quickPicks.isEmpty())
+        }
+
+    @Test
+    fun rule2SeedGenreAcceptedNeverPassesTracksPulledFromSeedRadio() =
+        runTest {
+            val dao = FakeSpaceRecDao()
+            dao.seedArms +=
+                SpaceSeedArmEntity(
+                    spaceId = "space_vgm_radio",
+                    artistId = "a_vgm_seed",
+                    seedVideoId = "v_vgm_seed",
+                    completions = 2,
+                    skips = 0,
+                    lastUsedSeq = -1,
+                )
+            dao.trackClasses["v_vgm_seed"] =
+                TrackClassEntity(
+                    videoId = "v_vgm_seed",
+                    language = "en",
+                    languageConfidence = 1.0f,
+                    genre = "soundtracks_video_game",
+                    evidence = "lastfm",
+                    checkedAt = baseTimeMs,
+                )
+            val seedTrack = song("v_vgm_seed", "Main Theme", artistId = "a_vgm_seed", artistName = "Koji Kondo")
+            val rapFromRadio = song("v_rap_radio", "Rap Track", artistId = "a_rapper", artistName = "MC Leak")
+            // Give rapFromRadio verified English language so ONLY the genre gate separates it from ACCEPT.
+            dao.trackClasses["v_rap_radio"] =
+                TrackClassEntity(
+                    videoId = "v_rap_radio",
+                    language = "en",
+                    languageConfidence = 1.0f,
+                    genre = null,
+                    evidence = "l3",
+                    checkedAt = baseTimeMs,
+                )
+
+            val yt = FakeSpaceYouTubeSource(radioSongsBySeed = mapOf("v_vgm_seed" to listOf(seedTrack, rapFromRadio)))
+            val engine =
+                SpaceRecEngine(
+                    dao = dao,
+                    resolver = FakeSpaceTagResolver(isAvailable = false),
+                    clock = { baseTimeMs + currentTime },
+                    random = Random(12),
+                    youtubeSource = yt,
+                    isBlocked = { false },
+                )
+
+            val finalEmission =
+                engine
+                    .refresh(
+                        spaceId = "space_vgm_radio",
+                        filter = SpaceFilterSpec(languages = listOf("english"), genres = listOf("soundtracks_video_game")),
+                        homeInput = SpaceHomeInput(primarySections = emptyList(), shelfLabels = defaultLabels),
+                    ).toList()
+                    .last { it.phase == SpaceFeedPhase.FINAL }
+
+            val finalIds = finalEmission.shelves.flatMap { it.songs }.map { it.id }
+            assertEquals(listOf("v_vgm_seed"), finalIds)
+            assertFalse("v_rap_radio" in finalIds)
+            assertEquals(1, finalEmission.stats.acceptCount)
+            assertEquals(1, finalEmission.stats.maybeCount)
+        }
+
+    @Test
+    fun rule4BelowMinimumFeedBackfillsVerifiedAcceptFromCacheBeforeMaybe() =
+        runTest {
+            val dao = FakeSpaceRecDao()
+            val cachedVerified = song("cached_vgm_ok", "Zelda Overworld", artistId = "a_cached_ok", artistName = "Koji Kondo")
+            val cachedUnverified = song("cached_maybe", "Unverified Cached Track", artistId = "a_cached_maybe", artistName = "Unknown")
+            val cachedPayload =
+                CachedSpaceFeedPayload(
+                    shelves = listOf(AssembledShelf("s1", "Fresh picks", songs = listOf(cachedVerified, cachedUnverified))),
+                )
+            dao.feedCache["space_backfill"] =
+                SpaceFeedCacheEntity(
+                    spaceId = "space_backfill",
+                    payloadJson = SpaceRecDbAdapter.encodeCachedPayload(cachedPayload),
+                    savedAt = baseTimeMs - 3_600_000L, // stale cache
+                    refreshSeq = 2,
+                )
+            dao.trackClasses["cached_vgm_ok"] =
+                TrackClassEntity(
+                    videoId = "cached_vgm_ok",
+                    language = "en",
+                    languageConfidence = 1.0f,
+                    genre = "soundtracks_video_game",
+                    evidence = "lastfm",
+                    checkedAt = baseTimeMs,
+                )
+
+            val liveVerified = song("live_vgm_1", "Halo Theme", artistId = "a_live_ok", artistName = "Martin O'Donnell")
+            dao.trackClasses["live_vgm_1"] =
+                TrackClassEntity(
+                    videoId = "live_vgm_1",
+                    language = "en",
+                    languageConfidence = 1.0f,
+                    genre = "soundtracks_video_game",
+                    evidence = "lastfm",
+                    checkedAt = baseTimeMs,
+                )
+            val liveMaybes = (1..5).map { i -> song("live_maybe_$i", "Random Rap $i", artistId = "a_lm_$i") }
+
+            val engine =
+                SpaceRecEngine(
+                    dao = dao,
+                    resolver = FakeSpaceTagResolver(isAvailable = false),
+                    clock = { baseTimeMs + currentTime },
+                    random = Random(13),
+                    youtubeSource = FakeSpaceYouTubeSource(),
+                    isBlocked = { false },
+                )
+
+            val finalEmission =
+                engine
+                    .refresh(
+                        spaceId = "space_backfill",
+                        filter = SpaceFilterSpec(languages = listOf("english"), genres = listOf("soundtracks_video_game")),
+                        homeInput =
+                            SpaceHomeInput(
+                                primarySections = listOf(HomeSection("Home", listOf(liveVerified) + liveMaybes)),
+                                shelfLabels = defaultLabels,
+                            ),
+                        forceNetwork = true,
+                    ).toList()
+                    .last { it.phase == SpaceFeedPhase.FINAL }
+
+            val finalIds = finalEmission.shelves.flatMap { it.songs }.map { it.id }.toSet()
+            assertEquals(setOf("live_vgm_1", "cached_vgm_ok"), finalIds)
+            assertFalse("cached_maybe" in finalIds)
+            assertTrue(liveMaybes.none { it.id in finalIds })
+        }
 }
 
 private class FakeSpaceRecDao(
@@ -449,6 +665,11 @@ private class FakeSpaceRecDao(
     val playEvents = mutableListOf<SpacePlayEventEntity>()
     val playHistory = mutableListOf<SpacePlayHistoryJoinedRow>()
     val songDurations = mutableMapOf<String, Int>()
+
+    override suspend fun getTrackClass(videoId: String): TrackClassEntity? {
+        readCount++
+        return trackClasses[videoId]
+    }
 
     override suspend fun getTrackClasses(videoIds: List<String>): List<TrackClassEntity> {
         readCount++

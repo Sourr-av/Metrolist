@@ -194,7 +194,7 @@ class ThompsonSamplerAndFeedAssemblyTest {
                     rankedCandidate("m_$i", "a_m_$i", score = 0.99, isMaybe = true)
                 }
 
-        val feedNoMaybe = FeedAssembler.assemble(fortyAcceptPlusMaybes, shelfLabels = labels, random = Random(99))
+        val feedNoMaybe = FeedAssembler.assemble(fortyAcceptPlusMaybes, shelfLabels = labels, allowMaybe = true, random = Random(99))
         assertTrue(feedNoMaybe.songs.none { it.gated.isMaybe }, "No MAYBE allowed when >= 40 ACCEPT exist")
 
         val thirtyAcceptPlusMaybes =
@@ -204,10 +204,14 @@ class ThompsonSamplerAndFeedAssemblyTest {
                 (0 until 30).map { i ->
                     rankedCandidate("m2_$i", "a_m2_$i", score = 0.99, isMaybe = true)
                 }
-        val feedWithMaybe = FeedAssembler.assemble(thirtyAcceptPlusMaybes, shelfLabels = labels, random = Random(99))
+        // Rule (1): default allowMaybe = false excludes all MAYBE tracks even when < 40 ACCEPT exist.
+        val feedStrictNoMaybe = FeedAssembler.assemble(thirtyAcceptPlusMaybes, shelfLabels = labels, random = Random(99))
+        assertTrue(feedStrictNoMaybe.songs.none { it.gated.isMaybe }, "Default constrained assembly must exclude all MAYBE tracks")
+
+        val feedWithMaybe = FeedAssembler.assemble(thirtyAcceptPlusMaybes, shelfLabels = labels, allowMaybe = true, random = Random(99))
         val maybeCount = feedWithMaybe.songs.count { it.gated.isMaybe }
         val share = maybeCount.toDouble() / feedWithMaybe.songs.size.toDouble()
-        assertTrue(maybeCount > 0, "Expected some MAYBEs when < 40 ACCEPT exist")
+        assertTrue(maybeCount > 0, "Expected some MAYBEs when allowMaybe = true and < 40 ACCEPT exist")
         assertTrue(share <= 0.25 + 1e-9, "Expected MAYBE share <= 0.25, got $share")
     }
 

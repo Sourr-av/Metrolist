@@ -121,14 +121,27 @@ object TrackDeduplicator {
 
         val mergedSources = group.flatMapTo(linkedSetOf()) { it.sources }
         val homeCopy = group.firstOrNull { it.homeShelfTitle != null }
-        val seedCopy = group.firstOrNull { it.seedArtistId != null }
+        val seedCopy = group.firstOrNull { it.seedArtistId != null || it.seedVideoId != null }
+        val mergedSeedVideoId = winner.seedVideoId ?: seedCopy?.seedVideoId
 
         return winner.copy(
             sources = mergedSources,
             seedArtistId = winner.seedArtistId ?: seedCopy?.seedArtistId,
             seedArtistName = winner.seedArtistName ?: seedCopy?.seedArtistName,
-            seedLanguageAccepted = group.any { it.seedLanguageAccepted },
-            seedGenreAccepted = group.any { it.seedGenreAccepted },
+            seedVideoId = mergedSeedVideoId,
+            seedLanguageAccepted =
+                group.any {
+                    it.seedLanguageAccepted &&
+                        (it.seedVideoId == null || it.seedVideoId == winner.song.id)
+                },
+            seedGenreAccepted =
+                group.any {
+                    it.seedGenreAccepted &&
+                        when {
+                            it.seedVideoId != null -> it.seedVideoId == winner.song.id
+                            else -> CandidateSource.SEED_RADIO !in it.sources
+                        }
+                },
             homeShelfTitle = winner.homeShelfTitle ?: homeCopy?.homeShelfTitle,
             homeShelfBrowseId = winner.homeShelfBrowseId ?: homeCopy?.homeShelfBrowseId,
         )

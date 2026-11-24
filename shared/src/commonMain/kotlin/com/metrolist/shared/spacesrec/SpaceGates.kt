@@ -166,14 +166,18 @@ class SpaceGates(
             }
 
             // G5 genre gate (only when the Space has genres or "instrumental").
-            // Order: track_class.genre -> settled artist genre verdict -> seedGenreAccepted -> MAYBE (high L5 priority).
-            val (genreVerdict, genreHighPriority) =
+            // Order: track_class.genre -> settled artist genre verdict -> seedGenreAccepted (seed track only) -> MAYBE (high L5 priority).
+            val genreEvaluation =
                 if (effectiveGenres.isEmpty()) {
-                    GateVerdict.ACCEPT to false
+                    GenreGateEvaluation(
+                        verdict = GateVerdict.ACCEPT,
+                        rule = GenreAcceptanceRule.BYPASS_EMPTY,
+                        highPriorityForL5 = false,
+                    )
                 } else {
                     evaluateGenreGate(candidate, effectiveGenres, context.nowMs)
                 }
-            if (genreVerdict == GateVerdict.REJECT) {
+            if (genreEvaluation.verdict == GateVerdict.REJECT) {
                 recordDrop(GateDropReason.GENRE_REJECTED)
                 rejectCount++
                 continue
@@ -184,8 +188,9 @@ class SpaceGates(
                     candidate = candidate,
                     trust = trust,
                     languageResult = languageResult,
-                    genreVerdict = genreVerdict,
-                    genreHighPriorityForL5 = genreHighPriority,
+                    genreVerdict = genreEvaluation.verdict,
+                    genreHighPriorityForL5 = genreEvaluation.highPriorityForL5,
+                    genreRule = genreEvaluation.rule,
                 )
             if (gated.isFullyAccepted) acceptCount++ else maybeCount++
             survivors += gated
@@ -222,11 +227,17 @@ class SpaceGates(
         return evaluate(candidates, context.copy(relaxShownExclusion = true))
     }
 
+    private data class GenreGateEvaluation(
+        val verdict: GateVerdict,
+        val rule: GenreAcceptanceRule,
+        val highPriorityForL5: Boolean,
+    )
+
     private suspend fun evaluateGenreGate(
         candidate: CandidateTrack,
         requestedGenres: List<String>,
         nowMs: Long,
-    ): Pair<GateVerdict, Boolean> {
+    ): GenreGateEvaluation {
         val cached = trackClassLookup.getTrackClass(candidate.song.id)
         val cachedGenreRaw = cached?.genre?.trim().orEmpty()
 
@@ -237,7 +248,11 @@ class SpaceGates(
                     .map(String::trim)
                     .filter(String::isNotEmpty)
             val verdict = if (tagsMatchAnyRequestedGenre(tags, requestedGenres)) GateVerdict.ACCEPT else GateVerdict.REJECT
-            return verdict to false
+            return GenreGateEvaluation(
+                verdict = verdict,
+                rule = GenreAcceptanceRule.TRACK_CLASS_GENRE,
+                highPriorityForL5 = false,
+            )
         }
 
         // Artist-level settled genre verdict.
@@ -251,17 +266,35 @@ class SpaceGates(
                     } else {
                         GateVerdict.REJECT
                     }
-                return verdict to false
+                return GenreGateEvaluation(
+                    verdict = verdict,
+                    rule = GenreAcceptanceRule.ARTIST_PROFILE_GENRE_VOTES,
+                    highPriorityForL5 = false,
+                )
             }
         }
 
-        // Unknown genre from a seeded radio whose seed matches the genre -> ACCEPT.
-        if (CandidateSource.SEED_RADIO in candidate.sources && candidate.seedGenreAccepted) {
-            return GateVerdict.ACCEPT to false
+        // Rule (2): seedGenreAccepted applies ONLY to the seed track itself, never to tracks pulled from its radio.
+        val isSeedTrackItself =
+            candidate.seedGenreAccepted &&
+                when {
+                    candidate.seedVideoId != null -> candidate.song.id == candidate.seedVideoId
+                    else -> CandidateSource.SEED_RADIO !in candidate.sources
+                }
+        if (isSeedTrackItself) {
+            return GenreGateEvaluation(
+                verdict = GateVerdict.ACCEPT,
+                rule = GenreAcceptanceRule.SEED_GENRE_ACCEPTED,
+                highPriorityForL5 = false,
+            )
         }
 
         // Otherwise MAYBE with high L5 priority.
-        return GateVerdict.MAYBE to true
+        return GenreGateEvaluation(
+            verdict = GateVerdict.MAYBE,
+            rule = GenreAcceptanceRule.MAYBE_PASSTHROUGH,
+            highPriorityForL5 = true,
+        )
     }
 
     private fun tagsMatchAnyRequestedGenre(

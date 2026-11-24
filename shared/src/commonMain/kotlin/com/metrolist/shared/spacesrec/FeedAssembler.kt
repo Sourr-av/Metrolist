@@ -33,6 +33,7 @@ object FeedAssembler {
         homeShelves: List<HomeShelfSeed> = emptyList(),
         shelfLabels: SpaceShelfLabels,
         recentlyHeardVideoIds: Set<String> = emptySet(),
+        allowMaybe: Boolean = false,
         config: SpaceRecConfig = SpaceRecConfig.Default,
         random: Random = Random.Default,
     ): AssembledFeed {
@@ -52,6 +53,10 @@ object FeedAssembler {
 
         val maxMaybesAllowed =
             when {
+                !allowMaybe -> {
+                    0
+                }
+
                 acceptedPool.size >= config.minSongsBeforeMaybeAllowed -> {
                     0
                 }

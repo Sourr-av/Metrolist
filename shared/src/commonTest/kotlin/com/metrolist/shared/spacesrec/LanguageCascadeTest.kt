@@ -243,4 +243,40 @@ class LanguageCascadeTest {
             assertEquals(GateVerdict.ACCEPT, customAccepted.verdict)
             assertEquals(LanguageStep.L2_ARTIST_PROFILE, customAccepted.step)
         }
+
+    @Test
+    fun rule3UnknownOrLowConfidenceLanguageReturnsMaybeNeverAccept() =
+        runTest {
+            val lowConfTrackCache =
+                FakeTrackLookup(
+                    mapOf(
+                        "v_low_conf" to TrackClassRecord("v_low_conf", "en", 0.45, null, "l3", nowMs),
+                        "v_null_lang" to TrackClassRecord("v_null_lang", null, 0.0, "soundtracks_video_game", "lastfm", nowMs),
+                    ),
+                )
+            val lowConfDetector = FakeTextDetector(DetectedLanguage("en", 0.55))
+            val cascade = LanguageCascade(lowConfTrackCache, FakeArtistLookup(), lowConfDetector)
+
+            // Low-confidence L0 cache entry must be MAYBE, not ACCEPT.
+            val lowL0 = cascade.evaluate(candidate(id = "v_low_conf", title = "Some Song Title"), listOf("english"), nowMs)
+            assertEquals(GateVerdict.MAYBE, lowL0.verdict)
+            assertEquals(LanguageStep.L0_TRACK_CACHE, lowL0.step)
+            assertTrue(lowL0.highPriorityForL5)
+
+            // Unknown language in track_class (language == null) with low-confidence L3 must be MAYBE.
+            val unknownL0 =
+                cascade.evaluate(
+                    candidate(id = "v_null_lang", title = "Orchestral Suite Theme", artistName = "Composer Name"),
+                    listOf("english"),
+                    nowMs,
+                )
+            assertEquals(GateVerdict.MAYBE, unknownL0.verdict)
+            assertEquals(LanguageStep.L3_ON_DEVICE, unknownL0.step)
+
+            // No cache, no artist profile, no detector -> unknown language -> MAYBE, never ACCEPT.
+            val noSignalCascade = LanguageCascade(FakeTrackLookup(), FakeArtistLookup(), NoOpTextLanguageDetector)
+            val unknown = noSignalCascade.evaluate(candidate(id = "v_none", title = "Main Theme"), listOf("english"), nowMs)
+            assertEquals(GateVerdict.MAYBE, unknown.verdict)
+            assertEquals(LanguageStep.UNRESOLVED_MAYBE, unknown.step)
+        }
 }

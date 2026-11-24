@@ -25,6 +25,16 @@ enum class GateVerdict {
     MAYBE,
 }
 
+enum class GenreAcceptanceRule(
+    val label: String,
+) {
+    BYPASS_EMPTY("bypass_empty"),
+    TRACK_CLASS_GENRE("track_class.genre"),
+    ARTIST_PROFILE_GENRE_VOTES("artist_profile.genreVotes"),
+    SEED_GENRE_ACCEPTED("seedGenreAccepted"),
+    MAYBE_PASSTHROUGH("MAYBE passthrough"),
+}
+
 enum class LanguageStep {
     BYPASS_EMPTY,
     BYPASS_INSTRUMENTAL,
@@ -159,6 +169,7 @@ data class CandidateTrack(
     val sources: Set<CandidateSource>,
     val seedArtistId: String? = null,
     val seedArtistName: String? = null,
+    val seedVideoId: String? = null,
     val seedLanguageAccepted: Boolean = false,
     val seedGenreAccepted: Boolean = false,
     val homeShelfTitle: String? = null,
@@ -194,6 +205,7 @@ data class GatedCandidate(
     val languageResult: LanguageCascadeResult,
     val genreVerdict: GateVerdict,
     val genreHighPriorityForL5: Boolean = false,
+    val genreRule: GenreAcceptanceRule = GenreAcceptanceRule.BYPASS_EMPTY,
 ) {
     val isFullyAccepted: Boolean
         get() = languageResult.verdict == GateVerdict.ACCEPT && genreVerdict == GateVerdict.ACCEPT

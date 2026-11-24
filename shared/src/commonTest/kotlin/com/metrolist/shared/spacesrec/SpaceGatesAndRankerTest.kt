@@ -220,17 +220,46 @@ class SpaceGatesAndRankerTest {
                     CandidateTrack(song("t_track_bad", artistId = "a_jazz"), setOf(CandidateSource.HOME)),
                     CandidateTrack(song("t_artist_ok", artistId = "a_jazz"), setOf(CandidateSource.HOME)),
                     CandidateTrack(song("t_artist_bad", artistId = "a_rock"), setOf(CandidateSource.HOME)),
-                    CandidateTrack(song("t_seed_ok", artistId = "a_unknown2"), setOf(CandidateSource.SEED_RADIO), seedGenreAccepted = true),
+                    CandidateTrack(
+                        song("t_seed_self", artistId = "a_unknown2"),
+                        setOf(CandidateSource.SEED_RADIO),
+                        seedVideoId = "t_seed_self",
+                        seedGenreAccepted = true,
+                    ),
+                    CandidateTrack(
+                        song("t_radio_from_seed", artistId = "a_unknown4"),
+                        setOf(CandidateSource.SEED_RADIO),
+                        seedVideoId = "t_seed_self",
+                        seedGenreAccepted = true,
+                    ),
+                    CandidateTrack(
+                        song("t_radio_no_seed_id", artistId = "a_unknown5"),
+                        setOf(CandidateSource.SEED_RADIO),
+                        seedGenreAccepted = true,
+                    ),
                     CandidateTrack(song("t_unknown", artistId = "a_unknown3"), setOf(CandidateSource.HOME)),
                 )
 
             val result = gates.evaluate(candidates, GateContext(nowMs = nowMs, filter = SpaceFilterSpec(genres = listOf("jazz"))))
             val byId = result.survivors.associateBy { it.candidate.song.id }
-            assertEquals(setOf("t_track_ok", "t_artist_ok", "t_seed_ok", "t_unknown"), byId.keys)
+            assertEquals(
+                setOf("t_track_ok", "t_artist_ok", "t_seed_self", "t_radio_from_seed", "t_radio_no_seed_id", "t_unknown"),
+                byId.keys,
+            )
             assertEquals(GateVerdict.ACCEPT, byId.getValue("t_track_ok").genreVerdict)
+            assertEquals(GenreAcceptanceRule.TRACK_CLASS_GENRE, byId.getValue("t_track_ok").genreRule)
             assertEquals(GateVerdict.ACCEPT, byId.getValue("t_artist_ok").genreVerdict)
-            assertEquals(GateVerdict.ACCEPT, byId.getValue("t_seed_ok").genreVerdict)
+            assertEquals(GenreAcceptanceRule.ARTIST_PROFILE_GENRE_VOTES, byId.getValue("t_artist_ok").genreRule)
+            assertEquals(GateVerdict.ACCEPT, byId.getValue("t_seed_self").genreVerdict)
+            assertEquals(GenreAcceptanceRule.SEED_GENRE_ACCEPTED, byId.getValue("t_seed_self").genreRule)
+            // Rule (2): tracks pulled from a seed's radio must NEVER inherit seedGenreAccepted.
+            assertEquals(GateVerdict.MAYBE, byId.getValue("t_radio_from_seed").genreVerdict)
+            assertEquals(GenreAcceptanceRule.MAYBE_PASSTHROUGH, byId.getValue("t_radio_from_seed").genreRule)
+            assertTrue(byId.getValue("t_radio_from_seed").genreHighPriorityForL5)
+            assertEquals(GateVerdict.MAYBE, byId.getValue("t_radio_no_seed_id").genreVerdict)
+            assertEquals(GenreAcceptanceRule.MAYBE_PASSTHROUGH, byId.getValue("t_radio_no_seed_id").genreRule)
             assertEquals(GateVerdict.MAYBE, byId.getValue("t_unknown").genreVerdict)
+            assertEquals(GenreAcceptanceRule.MAYBE_PASSTHROUGH, byId.getValue("t_unknown").genreRule)
             assertTrue(byId.getValue("t_unknown").genreHighPriorityForL5)
             assertEquals(2, result.stats.drops[GateDropReason.GENRE_REJECTED])
         }
