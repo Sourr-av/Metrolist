@@ -157,6 +157,16 @@ class LegacyBackupConversionTest {
                     }
                     JdbcSQLiteDriver().open(legacy.path).use { connection ->
                         if (version < 58) connection.execSQL("DROP TABLE pending_scrobble")
+                        if (version < 69) {
+                            listOf(
+                                "artist_profile",
+                                "track_class",
+                                "space_feed_cache",
+                                "space_shown",
+                                "space_seed_arm",
+                                "space_play_event",
+                            ).forEach { table -> connection.execSQL("DROP TABLE IF EXISTS $table") }
+                        }
                         connection.execSQL("PRAGMA user_version = $version")
                     }
                     JdbcSQLiteDriver().open(current.path).use { connection ->

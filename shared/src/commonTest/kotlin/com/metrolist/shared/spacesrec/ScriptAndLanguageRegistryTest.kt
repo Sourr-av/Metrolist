@@ -101,6 +101,6 @@ class ScriptAndLanguageRegistryTest {
         assertEquals(WritingScript.CYRILLIC, ScriptDetector.detect("Группа крови Кино").dominantScript)
         assertEquals(WritingScript.THAI, ScriptDetector.detect("เพลงไทย").dominantScript)
         assertEquals(WritingScript.GREEK, ScriptDetector.detect("Ελληνικό τραγούδι").dominantScript)
-        assertNull(ScriptDetector.detect("12345 !!!"))
+        assertNull(ScriptDetector.detect("12345 !!!").dominantScript)
     }
 }

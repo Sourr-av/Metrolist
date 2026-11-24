@@ -113,8 +113,6 @@ data class SpaceRecConfig(
     val aiArtistExactToken: String = "AI",
 ) {
     companion object {
-        val Default = SpaceRecConfig()
-
         const val MILLIS_PER_DAY: Long = 86_400_000L
 
         val DEFAULT_AI_MARKERS: List<String> =
@@ -129,5 +127,7 @@ data class SpaceRecConfig(
                 "suno",
                 "udio",
             )
+
+        val Default = SpaceRecConfig()
     }
 }
