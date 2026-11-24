@@ -169,8 +169,24 @@ class SpaceGatesAndRankerTest {
             val trackLookup =
                 EmptyTrackLookup(
                     mapOf(
-                        "t_track_ok" to TrackClassRecord("t_track_ok", language = "en", genre = "jazz", checkedAt = nowMs),
-                        "t_track_bad" to TrackClassRecord("t_track_bad", language = "en", genre = "metal", checkedAt = nowMs),
+                        "t_track_ok" to
+                            TrackClassRecord(
+                                videoId = "t_track_ok",
+                                language = "en",
+                                languageConfidence = 1.0,
+                                genre = "jazz",
+                                evidence = "lastfm",
+                                checkedAt = nowMs,
+                            ),
+                        "t_track_bad" to
+                            TrackClassRecord(
+                                videoId = "t_track_bad",
+                                language = "en",
+                                languageConfidence = 1.0,
+                                genre = "metal",
+                                evidence = "lastfm",
+                                checkedAt = nowMs,
+                            ),
                     ),
                 )
             val artistLookup =
@@ -216,7 +232,7 @@ class SpaceGatesAndRankerTest {
             assertEquals(GateVerdict.ACCEPT, byId.getValue("t_seed_ok").genreVerdict)
             assertEquals(GateVerdict.MAYBE, byId.getValue("t_unknown").genreVerdict)
             assertTrue(byId.getValue("t_unknown").genreHighPriorityForL5)
-            assertEquals(2, result.stats.drops[GateDropReason.GENRE_REJECT])
+            assertEquals(2, result.stats.drops[GateDropReason.GENRE_REJECTED])
         }
 
     @Test

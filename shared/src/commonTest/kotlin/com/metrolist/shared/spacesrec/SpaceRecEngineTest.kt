@@ -168,14 +168,17 @@ class SpaceRecEngineTest {
                     spaceId = "space_hang",
                     artistId = "a_seed",
                     seedVideoId = "v_seed",
+                    completions = 0,
+                    skips = 0,
+                    lastUsedSeq = -1,
                 )
             dao.playHistory +=
                 SpacePlayHistoryJoinedRow(
                     eventId = 1L,
                     videoId = "v_seed",
-                    timestamp = baseTimeMs - 2L * SpaceRecConfig.MILLIS_PER_DAY,
                     playTimeMs = 60_000L,
-                    durationSec = 200,
+                    playedAtMs = baseTimeMs - 2L * SpaceRecConfig.MILLIS_PER_DAY,
+                    durationSeconds = 200,
                     artistId = "a_seed",
                 )
 
@@ -307,13 +310,21 @@ class SpaceRecEngineTest {
                     SpacePlayHistoryJoinedRow(
                         eventId = idx.toLong() + 1L,
                         videoId = s.id,
-                        timestamp = baseTimeMs - SpaceRecConfig.MILLIS_PER_DAY,
                         playTimeMs = 90_000L,
-                        durationSec = 210,
+                        playedAtMs = baseTimeMs - SpaceRecConfig.MILLIS_PER_DAY,
+                        durationSeconds = 210,
                         artistId = s.artists.first().id,
                     )
             }
-            dao.seedArms += SpaceSeedArmEntity("space_heard", "a_seed", "v_seed")
+            dao.seedArms +=
+                SpaceSeedArmEntity(
+                    spaceId = "space_heard",
+                    artistId = "a_seed",
+                    seedVideoId = "v_seed",
+                    completions = 0,
+                    skips = 0,
+                    lastUsedSeq = -1,
+                )
 
             val yt =
                 FakeSpaceYouTubeSource(
@@ -375,8 +386,9 @@ class SpaceRecEngineTest {
                     spaceId = "space_bandit",
                     artistId = "a_seed",
                     seedVideoId = "v_seed",
-                    alpha = 1.0,
-                    beta = 1.0,
+                    completions = 0,
+                    skips = 0,
+                    lastUsedSeq = -1,
                 )
             val radioSong = song("r_1", "മലയാളം റേഡിയോ", artistId = "a_r1", durationSec = null)
             dao.songDurations["r_1"] = 180 // fallback duration from song table
@@ -412,14 +424,14 @@ class SpaceRecEngineTest {
             engine.recordPlay("not_from_space", playedMs = 60_000L, durationMs = 200_000L)
             assertTrue(dao.playEvents.isEmpty())
 
-            // Completed play on Space radio song (duration resolved via song table fallback) -> event + alpha + 1!
+            // Completed play on Space radio song (duration resolved via song table fallback) -> event + completions + 1!
             engine.recordPlay("r_1", playedMs = 45_000L, durationMs = null)
             assertEquals(1, dao.playEvents.size)
             assertEquals("space_bandit", dao.playEvents.first().spaceId)
             assertEquals("a_seed", dao.playEvents.first().seedArtistId)
             val updatedArm = dao.seedArms.first { it.artistId == "a_seed" }
-            assertEquals(2.0, updatedArm.alpha)
-            assertEquals(1.0, updatedArm.beta)
+            assertEquals(1, updatedArm.completions)
+            assertEquals(0, updatedArm.skips)
         }
 }
 
@@ -441,12 +453,12 @@ private class FakeSpaceRecDao(
         return videoIds.mapNotNull { trackClasses[it] }
     }
 
-    override suspend fun upsertTrackClass(entry: TrackClassEntity) {
-        trackClasses[entry.videoId] = entry
+    override suspend fun upsertTrackClass(entity: TrackClassEntity) {
+        trackClasses[entity.videoId] = entity
     }
 
-    override suspend fun upsertTrackClasses(entries: List<TrackClassEntity>) {
-        entries.forEach { trackClasses[it.videoId] = it }
+    override suspend fun upsertTrackClasses(entities: List<TrackClassEntity>) {
+        entities.forEach { trackClasses[it.videoId] = it }
     }
 
     override suspend fun getArtistProfile(artistId: String): ArtistProfileEntity? {
@@ -459,8 +471,8 @@ private class FakeSpaceRecDao(
         return artistIds.mapNotNull { artistProfiles[it] }
     }
 
-    override suspend fun upsertArtistProfile(profile: ArtistProfileEntity) {
-        artistProfiles[profile.artistId] = profile
+    override suspend fun upsertArtistProfile(entity: ArtistProfileEntity) {
+        artistProfiles[entity.artistId] = entity
     }
 
     override suspend fun getSeedArms(spaceId: String): List<SpaceSeedArmEntity> {
@@ -476,13 +488,13 @@ private class FakeSpaceRecDao(
         return seedArms.firstOrNull { it.spaceId == spaceId && it.artistId == artistId }
     }
 
-    override suspend fun upsertSeedArm(arm: SpaceSeedArmEntity) {
-        seedArms.removeAll { it.spaceId == arm.spaceId && it.artistId == arm.artistId }
-        seedArms += arm
+    override suspend fun upsertSeedArm(entity: SpaceSeedArmEntity) {
+        seedArms.removeAll { it.spaceId == entity.spaceId && it.artistId == entity.artistId }
+        seedArms += entity
     }
 
-    override suspend fun upsertSeedArms(arms: List<SpaceSeedArmEntity>) {
-        arms.forEach { upsertSeedArm(it) }
+    override suspend fun upsertSeedArms(entities: List<SpaceSeedArmEntity>) {
+        entities.forEach { upsertSeedArm(it) }
     }
 
     override suspend fun getRecentlyShownVideoIds(
@@ -510,17 +522,18 @@ private class FakeSpaceRecDao(
         return feedCache[spaceId]
     }
 
-    override suspend fun upsertFeedCache(cache: SpaceFeedCacheEntity) {
-        feedCache[cache.spaceId] = cache
+    override suspend fun upsertFeedCache(entity: SpaceFeedCacheEntity) {
+        feedCache[entity.spaceId] = entity
     }
 
-    override suspend fun insertPlayEvent(event: SpacePlayEventEntity) {
+    override suspend fun insertPlayEvent(event: SpacePlayEventEntity): Long {
         playEvents += event
+        return playEvents.size.toLong()
     }
 
-    override suspend fun getPlayHistoryWithDurationSince(sinceMs: Long): List<SpacePlayHistoryJoinedRow> {
+    override suspend fun getPlayHistoryWithDurationSince(sinceTimestampMs: Long): List<SpacePlayHistoryJoinedRow> {
         readCount++
-        return playHistory.filter { it.timestamp >= sinceMs }
+        return playHistory.filter { it.playedAtMs >= sinceTimestampMs }
     }
 
     override suspend fun getAllEverPlayedVideoIds(): List<String> {
@@ -553,13 +566,13 @@ private class FakeSpaceYouTubeSource(
     ): RadioQueuePage {
         callCount++
         if (hangForever) delay(60_000L)
-        return RadioQueuePage(songs = radioSongs, continuation = null)
+        return RadioQueuePage(songs = radioSongs, chips = emptyList(), continuation = null)
     }
 
     override suspend fun continueRadioQueue(continuation: String): RadioQueuePage {
         callCount++
         if (hangForever) delay(60_000L)
-        return RadioQueuePage(songs = emptyList(), continuation = null)
+        return RadioQueuePage(songs = emptyList(), chips = emptyList(), continuation = null)
     }
 
     override suspend fun startArtistRadio(channelId: String): List<SongItem> {

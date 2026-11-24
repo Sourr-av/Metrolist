@@ -112,7 +112,14 @@ class CircuitBreakerAndDbAdapterTest {
                     override suspend fun getTrackClasses(videoIds: List<String>): List<TrackClassEntity> {
                         trackChunkSizes += videoIds.size
                         return videoIds.map { id ->
-                            TrackClassEntity(videoId = id, language = "en", checkedAt = 1L)
+                            TrackClassEntity(
+                                videoId = id,
+                                language = "en",
+                                languageConfidence = 1.0f,
+                                genre = null,
+                                evidence = "test",
+                                checkedAt = 1L,
+                            )
                         }
                     }
 
@@ -123,7 +130,7 @@ class CircuitBreakerAndDbAdapterTest {
                                 artistId = id,
                                 name = "Artist $id",
                                 languageVotesJson = """{"en":3.0}""",
-                                totalVotes = 3.0,
+                                totalVotes = 3.0f,
                                 updatedAt = 1L,
                                 genreVotesJson = """{"rock":3.0}""",
                             )
@@ -138,8 +145,8 @@ class CircuitBreakerAndDbAdapterTest {
 
             assertEquals(listOf(500, 500, 230), trackChunkSizes)
             assertEquals(listOf(500, 150), artistChunkSizes)
-            assertTrue(trackChunkSizes.all { it <= SpaceRecDbAdapter.MAX_SQLITE_BIND_PARAMS })
-            assertTrue(artistChunkSizes.all { it <= SpaceRecDbAdapter.MAX_SQLITE_BIND_PARAMS })
+            assertTrue(trackChunkSizes.all { it <= SpaceRecDbAdapter.BATCH_CHUNK_SIZE })
+            assertTrue(artistChunkSizes.all { it <= SpaceRecDbAdapter.BATCH_CHUNK_SIZE })
             assertEquals(1_230, preloaded.trackClasses.size)
             assertEquals(650, preloaded.artistProfiles.size)
             assertEquals("en", preloaded.trackClassLookup.getTrackClass("v_1230")?.language)
@@ -156,47 +163,63 @@ class CircuitBreakerAndDbAdapterTest {
     fun groupPlayHistoryMergesMultipleArtistsPerEventRow() {
         val rows =
             listOf(
-                SpacePlayHistoryJoinedRow(10L, "v1", 1000L, 45_000L, 200, "a1"),
-                SpacePlayHistoryJoinedRow(10L, "v1", 1000L, 45_000L, 200, "a2"),
-                SpacePlayHistoryJoinedRow(11L, "v2", 2000L, 12_000L, 0, null),
+                SpacePlayHistoryJoinedRow(
+                    eventId = 10L,
+                    videoId = "v1",
+                    playTimeMs = 45_000L,
+                    playedAtMs = 1_000L,
+                    durationSeconds = 200,
+                    artistId = "a1",
+                ),
+                SpacePlayHistoryJoinedRow(
+                    eventId = 10L,
+                    videoId = "v1",
+                    playTimeMs = 45_000L,
+                    playedAtMs = 1_000L,
+                    durationSeconds = 200,
+                    artistId = "a2",
+                ),
+                SpacePlayHistoryJoinedRow(
+                    eventId = 11L,
+                    videoId = "v2",
+                    playTimeMs = 12_000L,
+                    playedAtMs = 2_000L,
+                    durationSeconds = 0,
+                    artistId = null,
+                ),
             )
 
         val plays = SpaceRecDbAdapter.groupPlayHistory(rows)
         assertEquals(2, plays.size)
         assertEquals(listOf("a1", "a2"), plays[0].artistIds)
         assertEquals(200_000L, plays[0].durationMs)
+        assertEquals(45_000L, plays[0].playedMs)
+        assertEquals(1_000L, plays[0].playedAtMs)
         assertEquals(emptyList(), plays[1].artistIds)
         assertNull(plays[1].durationMs)
     }
 }
 
 internal open class StubSpaceRecDao : SpaceRecDao {
-    override suspend fun getTrackClass(videoId: String): TrackClassEntity? = null
-
-    override suspend fun getTrackClasses(videoIds: List<String>): List<TrackClassEntity> = emptyList()
-
-    override suspend fun upsertTrackClass(entry: TrackClassEntity) = Unit
-
-    override suspend fun upsertTrackClasses(entries: List<TrackClassEntity>) = Unit
-
     override suspend fun getArtistProfile(artistId: String): ArtistProfileEntity? = null
 
     override suspend fun getArtistProfiles(artistIds: List<String>): List<ArtistProfileEntity> = emptyList()
 
-    override suspend fun upsertArtistProfile(profile: ArtistProfileEntity) = Unit
+    override suspend fun upsertArtistProfile(entity: ArtistProfileEntity) = Unit
 
-    override suspend fun upsertArtistProfiles(profiles: List<ArtistProfileEntity>) = Unit
+    override suspend fun getTrackClass(videoId: String): TrackClassEntity? = null
 
-    override suspend fun getSeedArms(spaceId: String): List<SpaceSeedArmEntity> = emptyList()
+    override suspend fun getTrackClasses(videoIds: List<String>): List<TrackClassEntity> = emptyList()
 
-    override suspend fun getSeedArm(
-        spaceId: String,
-        artistId: String,
-    ): SpaceSeedArmEntity? = null
+    override suspend fun upsertTrackClass(entity: TrackClassEntity) = Unit
 
-    override suspend fun upsertSeedArm(arm: SpaceSeedArmEntity) = Unit
+    override suspend fun upsertTrackClasses(entities: List<TrackClassEntity>) = Unit
 
-    override suspend fun upsertSeedArms(arms: List<SpaceSeedArmEntity>) = Unit
+    override suspend fun getFeedCache(spaceId: String): SpaceFeedCacheEntity? = null
+
+    override suspend fun upsertFeedCache(entity: SpaceFeedCacheEntity) = Unit
+
+    override suspend fun deleteFeedCache(spaceId: String) = Unit
 
     override suspend fun getRecentlyShownVideoIds(
         spaceId: String,
@@ -210,20 +233,36 @@ internal open class StubSpaceRecDao : SpaceRecDao {
         minRefreshSeq: Int,
     ) = Unit
 
-    override suspend fun getFeedCache(spaceId: String): SpaceFeedCacheEntity? = null
+    override suspend fun clearShownForSpace(spaceId: String) = Unit
 
-    override suspend fun upsertFeedCache(cache: SpaceFeedCacheEntity) = Unit
+    override suspend fun getSeedArms(spaceId: String): List<SpaceSeedArmEntity> = emptyList()
 
-    override suspend fun deleteFeedCache(spaceId: String) = Unit
+    override suspend fun getSeedArm(
+        spaceId: String,
+        artistId: String,
+    ): SpaceSeedArmEntity? = null
 
-    override suspend fun insertPlayEvent(event: SpacePlayEventEntity) = Unit
+    override suspend fun upsertSeedArm(entity: SpaceSeedArmEntity) = Unit
 
-    override suspend fun getPlayEventsForSpace(
+    override suspend fun upsertSeedArms(entities: List<SpaceSeedArmEntity>) = Unit
+
+    override suspend fun deleteSeedArmsForSpace(spaceId: String) = Unit
+
+    override suspend fun insertPlayEvent(event: SpacePlayEventEntity): Long = 0L
+
+    override suspend fun getRecentPlayEventsForSpace(
         spaceId: String,
         sinceMs: Long,
     ): List<SpacePlayEventEntity> = emptyList()
 
-    override suspend fun getPlayHistoryWithDurationSince(sinceMs: Long): List<SpacePlayHistoryJoinedRow> = emptyList()
+    override suspend fun getPlayEventsForSongSince(
+        videoId: String,
+        sinceMs: Long,
+    ): List<SpacePlayEventEntity> = emptyList()
+
+    override suspend fun prunePlayEventsBefore(cutoffMs: Long) = Unit
+
+    override suspend fun getPlayHistoryWithDurationSince(sinceTimestampMs: Long): List<SpacePlayHistoryJoinedRow> = emptyList()
 
     override suspend fun getAllEverPlayedVideoIds(): List<String> = emptyList()
 
