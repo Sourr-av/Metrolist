@@ -85,6 +85,7 @@ object SpaceRanker {
             sources.maxOf { source ->
                 when (source) {
                     CandidateSource.HOME -> config.sourceScoreHome
+                    CandidateSource.LOCAL_HISTORY -> config.sourceScoreHome
                     CandidateSource.SEED_RADIO -> config.sourceScoreSeedRadio
                     CandidateSource.ARTIST_RADIO -> config.sourceScoreArtistRadio
                     CandidateSource.HOME_CARD -> config.sourceScoreHomeCard

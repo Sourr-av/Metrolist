@@ -261,7 +261,8 @@ class SpaceContentFilterTest {
             val spec = SpaceFilterSpec(languages = listOf("english"), genres = listOf("hip_hop"))
 
             val genericPlaylist = PlaylistItem(id = "PL1", title = "Hip-Hop Hits", author = "YouTube Music", thumbnail = null)
-            val explicitEnglishPlaylist = PlaylistItem(id = "PL2", title = "US Hip-Hop Essentials", author = "YouTube Music", thumbnail = null)
+            val explicitEnglishPlaylist =
+                PlaylistItem(id = "PL2", title = "American Hip-Hop Essentials", author = "YouTube Music", thumbnail = null)
 
             assertEquals(
                 SpaceFilterDecision.REJECT_LANGUAGE_UNVERIFIED,

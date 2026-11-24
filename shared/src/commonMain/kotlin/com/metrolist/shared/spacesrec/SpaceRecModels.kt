@@ -8,12 +8,15 @@ package com.metrolist.shared.spacesrec
 import com.metrolist.shared.model.SongItem
 import kotlinx.serialization.Serializable
 
-enum class CandidateSource {
-    HOME,
-    HOME_CARD,
-    SEED_RADIO,
-    ARTIST_RADIO,
-    SEARCH,
+enum class CandidateSource(
+    val isHeardExclusionExempt: Boolean,
+) {
+    HOME(isHeardExclusionExempt = true),
+    HOME_CARD(isHeardExclusionExempt = true),
+    LOCAL_HISTORY(isHeardExclusionExempt = true),
+    SEED_RADIO(isHeardExclusionExempt = false),
+    ARTIST_RADIO(isHeardExclusionExempt = false),
+    SEARCH(isHeardExclusionExempt = false),
 }
 
 enum class GateVerdict {
@@ -47,7 +50,11 @@ data class ArtistProfileRecord(
     val languageVotes: Map<String, Double>,
     val totalVotes: Double,
     val updatedAt: Long,
+    val genreVotes: Map<String, Double> = emptyMap(),
 ) {
+    val totalGenreVotes: Double
+        get() = genreVotes.values.sum()
+
     fun settledLanguage(
         nowMs: Long,
         config: SpaceRecConfig = SpaceRecConfig.Default,
@@ -57,6 +64,19 @@ data class ArtistProfileRecord(
         if (totalVotes < config.artistSettledMinVotes || totalVotes <= 0.0) return null
         val top = languageVotes.maxByOrNull { it.value } ?: return null
         val share = top.value / totalVotes
+        return if (share >= config.artistSettledMinShare) top.key else null
+    }
+
+    fun settledGenre(
+        nowMs: Long,
+        config: SpaceRecConfig = SpaceRecConfig.Default,
+    ): String? {
+        val ttlMs = config.artistProfileTtlDays.toLong() * SpaceRecConfig.MILLIS_PER_DAY
+        if (nowMs - updatedAt > ttlMs) return null
+        val sum = totalGenreVotes
+        if (sum < config.artistSettledMinVotes || sum <= 0.0) return null
+        val top = genreVotes.maxByOrNull { it.value } ?: return null
+        val share = top.value / sum
         return if (share >= config.artistSettledMinShare) top.key else null
     }
 
@@ -72,6 +92,21 @@ data class ArtistProfileRecord(
         return copy(
             languageVotes = updatedVotes,
             totalVotes = totalVotes + weight,
+            updatedAt = nowMs,
+        )
+    }
+
+    fun addGenreVote(
+        genreSlug: String,
+        weight: Double,
+        nowMs: Long,
+    ): ArtistProfileRecord {
+        val normalized = genreSlug.trim().lowercase()
+        if (normalized.isEmpty() || weight <= 0.0) return this
+        val updatedVotes = genreVotes.toMutableMap()
+        updatedVotes[normalized] = (updatedVotes[normalized] ?: 0.0) + weight
+        return copy(
+            genreVotes = updatedVotes,
             updatedAt = nowMs,
         )
     }
@@ -148,6 +183,7 @@ data class GatedCandidate(
     val trust: Double,
     val languageResult: LanguageCascadeResult,
     val genreVerdict: GateVerdict,
+    val genreHighPriorityForL5: Boolean = false,
 ) {
     val isFullyAccepted: Boolean
         get() = languageResult.verdict == GateVerdict.ACCEPT && genreVerdict == GateVerdict.ACCEPT
@@ -157,6 +193,9 @@ data class GatedCandidate(
             languageResult.verdict != GateVerdict.REJECT &&
                 genreVerdict != GateVerdict.REJECT &&
                 !isFullyAccepted
+
+    val highPriorityForL5: Boolean
+        get() = languageResult.highPriorityForL5 || genreHighPriorityForL5
 }
 
 data class RankedCandidate(
@@ -177,12 +216,35 @@ data class SpaceShelfLabels(
     val moreLikeFormat: (artistName: String) -> String,
 )
 
+@Serializable
 data class AssembledShelf(
     val key: String,
     val title: String,
     val browseId: String? = null,
     val songs: List<SongItem>,
     val isGenerated: Boolean = false,
+)
+
+@Serializable
+data class CachedSpaceFeedPayload(
+    val shelves: List<AssembledShelf>,
+    val quickPicks: List<SongItem> = emptyList(),
+    val keepListening: List<SongItem> = emptyList(),
+    val forgottenFavorites: List<SongItem> = emptyList(),
+)
+
+enum class SpaceFeedPhase {
+    CACHE,
+    PARTIAL,
+    FINAL,
+    RESOLVED_UPDATE,
+}
+
+data class TrackProvenance(
+    val spaceId: String,
+    val seedArtistId: String?,
+    val source: CandidateSource,
+    val durationMs: Long?,
 )
 
 data class AssembledFeed(

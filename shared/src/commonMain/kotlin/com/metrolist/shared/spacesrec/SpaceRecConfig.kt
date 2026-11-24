@@ -23,7 +23,8 @@ data class SpaceRecConfig(
     // Concurrency & network classification
     val radioConcurrency: Int = 4,
     val classifyNetworkConcurrency: Int = 4,
-    val maxNetworkClassifyPerRefresh: Int = 20,
+    val maxNetworkClassifyPerRefresh: Int = 60,
+    val l5WindowMs: Long = 30_000L,
     val circuitBreakerFailureThreshold: Int = 5,
     val circuitBreakerOpenDurationMs: Long = 60_000L,
     // Candidate generation

@@ -30,7 +30,17 @@ data class SpaceFallbackShelfTitles(
     val albums: String = "Matching albums",
     val playlists: String = "Matching playlists",
     val artists: String = "Matching artists",
-)
+    val freshPicks: String = "Fresh picks",
+    val moreLikeTemplate: String = "More like %1\$s",
+) {
+    fun formatMoreLike(artistName: String): String =
+        when {
+            moreLikeTemplate.contains("{artist}") -> moreLikeTemplate.replace("{artist}", artistName)
+            moreLikeTemplate.contains("%1\$s") -> moreLikeTemplate.replace("%1\$s", artistName)
+            moreLikeTemplate.contains("%s") -> moreLikeTemplate.replace("%s", artistName)
+            else -> "$moreLikeTemplate $artistName"
+        }
+}
 
 data class SpaceFilteredFeedResult(
     val sections: List<HomeSection>,

@@ -5,6 +5,7 @@
 
 package com.metrolist.shared.db.entities
 
+import androidx.room3.ColumnInfo
 import androidx.room3.Entity
 import androidx.room3.Index
 import androidx.room3.PrimaryKey
@@ -16,6 +17,7 @@ data class ArtistProfileEntity(
     val languageVotesJson: String,
     val totalVotes: Float,
     val updatedAt: Long,
+    @ColumnInfo(defaultValue = "'{}'") val genreVotesJson: String = "{}",
 )
 
 @Entity(tableName = "track_class")

@@ -45,7 +45,12 @@ import com.metrolist.shared.spaces.LastFmSpaceTagProvider
 import com.metrolist.shared.spaces.SpaceCandidateSource
 import com.metrolist.shared.spaces.SpaceContentFilter
 import com.metrolist.shared.spaces.SpaceFallbackShelfTitles
-import com.metrolist.shared.spaces.SpaceFeedSupplement
+import com.metrolist.shared.spacesrec.LastFmSpaceTagResolver
+import com.metrolist.shared.spacesrec.SpaceFeedEmission
+import com.metrolist.shared.spacesrec.SpaceFeedPhase
+import com.metrolist.shared.spacesrec.SpaceHomeInput
+import com.metrolist.shared.spacesrec.SpaceRecEngine
+import com.metrolist.shared.spacesrec.SpaceShelfLabels
 import com.metrolist.shared.state.GlobalYouTube
 import com.metrolist.shared.state.GlobalYouTubeRepository
 import com.metrolist.shared.ui.components.AUTO_PLAYLIST_ICON_LIKED
@@ -241,21 +246,26 @@ class HomeViewModel(
     private val httpClient: HttpClient = GlobalYouTube.client,
     var likedSongsName: String,
     private val persistLastHomePage: Boolean = true,
+    initialSpaceId: String? = null,
     initialSpaceFilter: SpaceFilterSpec? = null,
     private val spaceShelfTitles: SpaceFallbackShelfTitles = SpaceFallbackShelfTitles(),
+    private val spaceRecEngine: SpaceRecEngine =
+        SpaceRecEngine(
+            dao = database.spaceRecDao(),
+            resolver = LastFmSpaceTagResolver(httpClient),
+        ),
 ) {
     val shelfCache = HomeShelfCache()
+
+    @Volatile
+    private var activeSpaceId: String? = initialSpaceId
 
     @Volatile
     private var activeSpaceFilter: SpaceFilterSpec? = initialSpaceFilter?.normalized()?.takeIf { it.isActive }
 
     private val spaceContentFilter = SpaceContentFilter(LastFmSpaceTagProvider(httpClient))
 
-    @Volatile
-    private var spaceRefreshSeed: Int = 0
-
-    @Volatile
-    private var previousSpaceItemIds: Set<String> = emptySet()
+    private var spaceEngineJob: Job? = null
 
     val hasActiveSpaceFilter: Boolean
         get() = activeSpaceFilter?.isActive == true
@@ -699,6 +709,7 @@ class HomeViewModel(
                             }
                             contentLoadGeneration++
                             cancelPagination()
+                            spaceEngineJob?.cancel()
                             loadJob?.cancel()
                             _uiState.update(HomeUiState::asOfflineSnapshot)
                         }
@@ -732,6 +743,7 @@ class HomeViewModel(
         val generation = ++contentLoadGeneration
         val sessionKey = GlobalYouTube.innerTube.sessionSnapshot().homeCacheSessionKey()
         cancelPagination()
+        spaceEngineJob?.cancel()
         cachedAllContent = cachedAllContent?.withoutChipFeeds()
         _uiState.update { it.withoutChipFeeds().copy(isRefreshing = isRefresh, loadMoreError = false) }
         loadJob?.cancel()
@@ -757,6 +769,7 @@ class HomeViewModel(
                 var primaryContentSnapshot: HomeUiState? = null
                 var loadedPrimaryPage: HomePageData? = primaryPageOverride
                 var completionTransferred = false
+                var spaceEngineTransferred = false
                 val spaceFilter = activeSpaceFilter
                 supervisorScope {
                     try {
@@ -834,101 +847,78 @@ class HomeViewModel(
                             val localQuickPicks = quickPicksDeferred.await().map { it.toSongItem() }
                             val localForgottenFavorites = forgottenFavoritesDeferred.await().map { it.toSongItem() }
                             val localKeepListening = keepListeningDeferred.await().map { it.toSongItem() }
-                            val currentRefreshSeed = spaceRefreshSeed
-                            val priorItemIds = previousSpaceItemIds
-                            val filteredFeed =
-                                SpaceFeedSupplement.buildFilteredFeed(
-                                    rawHomeSections = hydratedPrimarySections,
-                                    homeChips = homePageData.chips,
-                                    exploreSections = emptyList(),
-                                    filter = spaceFilter,
-                                    contentFilter = spaceContentFilter,
-                                    shelfTitles = spaceShelfTitles,
-                                    signedIn = signedIn,
-                                    initialContinuation = homePageData.continuation,
-                                    localQuickPicks = localQuickPicks,
-                                    localKeepListening = localKeepListening,
-                                    localForgottenFavorites = localForgottenFavorites,
-                                    refreshSeed = currentRefreshSeed,
-                                    previousItemIds = priorItemIds,
-                                )
                             if (generation != contentLoadGeneration ||
                                 sessionKey != GlobalYouTube.innerTube.sessionSnapshot().homeCacheSessionKey()
                             ) {
                                 return@supervisorScope
                             }
-                            val filteredSections = filteredFeed.sections
-                            val filteredQuickPicks = filteredFeed.quickPicks
-                            val filteredKeepListening = filteredFeed.keepListening
-                            val filteredForgottenFavorites = filteredFeed.forgottenFavorites
-                            val filteredSpeedDial =
-                                speedDialRecommendations(
-                                    quickPicks = filteredQuickPicks.ifEmpty { filteredFeed.fallbackSongs },
-                                    otherShelves =
-                                        filteredSections
-                                            .filterNot { it.browseId?.startsWith("FEmusic_quickpicks") == true }
-                                            .map { it.items },
-                                    localFallback = filteredKeepListening + filteredQuickPicks,
-                                    excludedPlaylistIds = emptySet(),
-                                ).distinctBy(::canonicalHomeItemId)
-                            val shownIds =
-                                buildSet {
-                                    filteredSections.forEach { section ->
-                                        section.items.take(12).forEach { add(canonicalHomeItemId(it)) }
-                                    }
-                                    filteredQuickPicks.take(12).forEach { add(canonicalHomeItemId(it)) }
-                                    filteredKeepListening.take(12).forEach { add(canonicalHomeItemId(it)) }
-                                    filteredSpeedDial.take(12).forEach { add(canonicalHomeItemId(it)) }
-                                }
-                            previousSpaceItemIds = shownIds
-                            val filteredLoadedState =
-                                _uiState.value.copy(
-                                    contentLocaleSignature = currentContentLocaleSignature(),
-                                    sessionKey = sessionKey,
-                                    data = filteredSections,
-                                    discoverySections = emptyList(),
-                                    isLoading = false,
-                                    isRefreshing = false,
-                                    isRevalidating = false,
-                                    isContentLoading = false,
-                                    isAllContentPending = false,
-                                    isLoadingMore = false,
-                                    chips = emptyList(),
-                                    selectedChip = null,
-                                    continuation = filteredFeed.nextContinuation,
-                                    trending =
-                                        findSectionsByBrowseId(filteredSections, "FEmusic_charts")
-                                            .flatMap { it.items.filterIsInstance<SongItem>() }
-                                            .distinctBy(::canonicalHomeItemId),
-                                    albumCharts =
-                                        findSectionsByBrowseId(filteredSections, "FEmusic_charts")
-                                            .flatMap { it.items.filterIsInstance<AlbumItem>() }
-                                            .distinctBy(::canonicalHomeItemId),
-                                    quickPicks = filteredQuickPicks,
-                                    newReleases = newReleasesFrom(filteredSections).distinctBy(::canonicalHomeItemId),
-                                    keepListening = filteredKeepListening,
-                                    forgottenFavorites = filteredForgottenFavorites,
-                                    speedDialItems = filteredSpeedDial,
-                                    speedDialPinnedIds = emptyList(),
-                                    communityPlaylist =
-                                        findSectionsByBrowseId(filteredSections, "FEmusic_community")
-                                            .flatMap { it.items.filterIsInstance<PlaylistItem>() }
-                                            .distinctBy(::canonicalHomeItemId),
-                                    moodsAndGenres = emptyList(),
-                                    podcasts = emptyList(),
-                                    similarRecommendations = findSimilarRecommendations(filteredSections),
-                                    recapPlaylists = emptyList(),
-                                    userPlaylists = emptyList(),
-                                    sections = uncategorizedHomeSections(filteredSections),
-                                    recentlyPlayed = emptyList(),
+                            val resolvedSpaceId = activeSpaceId?.takeIf(String::isNotBlank) ?: "space_default"
+                            val homeInput =
+                                SpaceHomeInput(
+                                    primarySections = hydratedPrimarySections,
+                                    continuation = homePageData.continuation,
+                                    localQuickPicks = localQuickPicks,
+                                    localKeepListening = localKeepListening,
+                                    localForgottenFavorites = localForgottenFavorites,
+                                    shelfLabels =
+                                        SpaceShelfLabels(
+                                            freshPicksTitle = spaceShelfTitles.freshPicks,
+                                            moreLikeFormat = spaceShelfTitles::formatMoreLike,
+                                        ),
                                 )
-                            allContentReloadRequired = false
-                            cacheAllContentState(filteredLoadedState)
-                            publishedPrimaryAllContent.value = null
-                            publishedPrimaryChipContent.value = null
-                            primaryContentSnapshot = filteredLoadedState
-                            primaryContentPublished = true
-                            _uiState.value = filteredLoadedState.withoutBlockedContent()
+                            completionTransferred = true
+                            spaceEngineTransferred = true
+                            spaceEngineJob?.cancel()
+                            spaceEngineJob =
+                                scope.launch(Dispatchers.Default) {
+                                    var completedNotified = false
+                                    try {
+                                        spaceRecEngine
+                                            .refresh(
+                                                spaceId = resolvedSpaceId,
+                                                filter = spaceFilter,
+                                                homeInput = homeInput,
+                                                forceNetwork = isRefresh,
+                                            ).collect { emission ->
+                                                if (generation != contentLoadGeneration ||
+                                                    sessionKey != GlobalYouTube.innerTube.sessionSnapshot().homeCacheSessionKey()
+                                                ) {
+                                                    return@collect
+                                                }
+                                                val loadedState = buildSpaceLoadedState(emission, sessionKey)
+                                                _uiState.value = loadedState.withoutBlockedContent()
+                                                if (emission.phase == SpaceFeedPhase.FINAL) {
+                                                    allContentReloadRequired = false
+                                                    cacheAllContentState(loadedState)
+                                                    publishedPrimaryAllContent.value = null
+                                                    publishedPrimaryChipContent.value = null
+                                                    if (!completedNotified) {
+                                                        completedNotified = true
+                                                        scope.launch { onComplete() }
+                                                    }
+                                                }
+                                            }
+                                    } catch (e: CancellationException) {
+                                        throw e
+                                    } catch (e: Exception) {
+                                        Logger.e(HOME_LOG_TAG, "Space feed refresh failed for $resolvedSpaceId", e)
+                                    } finally {
+                                        if (generation == contentLoadGeneration) {
+                                            _uiState.update {
+                                                it.copy(
+                                                    isLoading = false,
+                                                    isRefreshing = false,
+                                                    isRevalidating = false,
+                                                    isContentLoading = false,
+                                                )
+                                            }
+                                        }
+                                        if (!completedNotified) {
+                                            completedNotified = true
+                                            scope.launch { onComplete() }
+                                        }
+                                    }
+                                }
                             return@supervisorScope
                         }
                         var userPlaylistsSnapshot = userPlaylistsDeferred.await()
@@ -1282,7 +1272,7 @@ class HomeViewModel(
                             }
                         }
                     } finally {
-                        if (generation == contentLoadGeneration) {
+                        if (generation == contentLoadGeneration && !spaceEngineTransferred) {
                             _uiState.update {
                                 it.copy(
                                     isLoading = false,
@@ -1711,12 +1701,83 @@ class HomeViewModel(
 
     private fun String.canonicalPlaylistId(): String = removePrefix("VL")
 
-    fun updateSpaceFilter(filter: SpaceFilterSpec?) {
+    private fun buildSpaceLoadedState(
+        emission: SpaceFeedEmission,
+        sessionKey: String,
+    ): HomeUiState {
+        val mappedSections =
+            emission.shelves.map { shelf ->
+                HomeSection(
+                    title = shelf.title,
+                    items = shelf.songs,
+                    browseId = shelf.browseId,
+                    isListStyle = true,
+                    numItemsPerColumn = 4,
+                )
+            }
+        val fallbackSongs = emission.shelves.flatMap { it.songs }
+        val filteredSpeedDial =
+            speedDialRecommendations(
+                quickPicks = emission.quickPicks.ifEmpty { fallbackSongs },
+                otherShelves =
+                    mappedSections
+                        .filterNot { it.browseId?.startsWith("FEmusic_quickpicks") == true }
+                        .map { it.items },
+                localFallback = emission.keepListening + emission.quickPicks,
+                excludedPlaylistIds = emptySet(),
+            ).distinctBy(::canonicalHomeItemId)
+
+        return _uiState.value.copy(
+            contentLocaleSignature = currentContentLocaleSignature(),
+            sessionKey = sessionKey,
+            data = mappedSections,
+            discoverySections = emptyList(),
+            isLoading = false,
+            isRefreshing = false,
+            isRevalidating = false,
+            isContentLoading = false,
+            isAllContentPending = false,
+            isLoadingMore = false,
+            chips = emptyList(),
+            selectedChip = null,
+            continuation = null,
+            trending =
+                findSectionsByBrowseId(mappedSections, "FEmusic_charts")
+                    .flatMap { it.items.filterIsInstance<SongItem>() }
+                    .distinctBy(::canonicalHomeItemId),
+            albumCharts =
+                findSectionsByBrowseId(mappedSections, "FEmusic_charts")
+                    .flatMap { it.items.filterIsInstance<AlbumItem>() }
+                    .distinctBy(::canonicalHomeItemId),
+            quickPicks = emission.quickPicks,
+            newReleases = newReleasesFrom(mappedSections).distinctBy(::canonicalHomeItemId),
+            keepListening = emission.keepListening,
+            forgottenFavorites = emission.forgottenFavorites,
+            speedDialItems = filteredSpeedDial,
+            speedDialPinnedIds = emptyList(),
+            communityPlaylist =
+                findSectionsByBrowseId(mappedSections, "FEmusic_community")
+                    .flatMap { it.items.filterIsInstance<PlaylistItem>() }
+                    .distinctBy(::canonicalHomeItemId),
+            moodsAndGenres = emptyList(),
+            podcasts = emptyList(),
+            similarRecommendations = findSimilarRecommendations(mappedSections),
+            recapPlaylists = emptyList(),
+            userPlaylists = emptyList(),
+            sections = uncategorizedHomeSections(mappedSections),
+            recentlyPlayed = emptyList(),
+        )
+    }
+
+    fun updateSpaceFilter(
+        spaceId: String?,
+        filter: SpaceFilterSpec?,
+    ) {
         val normalized = filter?.normalized()?.takeIf { it.isActive }
-        if (normalized == activeSpaceFilter) return
+        if (spaceId == activeSpaceId && normalized == activeSpaceFilter) return
+        spaceEngineJob?.cancel()
+        activeSpaceId = spaceId
         activeSpaceFilter = normalized
-        spaceRefreshSeed = 0
-        previousSpaceItemIds = emptySet()
         chipContentCache = emptyMap()
         cachedAllContent = null
         cachedSelectedChipContent = null
@@ -1730,9 +1791,7 @@ class HomeViewModel(
     }
 
     fun refresh(onComplete: () -> Unit) {
-        if (hasActiveSpaceFilter) {
-            spaceRefreshSeed++
-        }
+        spaceEngineJob?.cancel()
         chipContentCache = emptyMap()
         val selectedChip = _uiState.value.selectedChip?.takeUnless { Settings.shared.hidePodcasts && it.isPodcastChip }
         loadHomeData(

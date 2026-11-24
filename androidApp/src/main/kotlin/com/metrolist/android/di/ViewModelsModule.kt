@@ -19,6 +19,10 @@ import com.metrolist.android.viewmodels.SearchViewModel
 import com.metrolist.android.viewmodels.StatsViewModel
 import com.metrolist.shared.api.artwork.AnimatedArtworkService
 import com.metrolist.shared.api.artwork.DirectCanvasProvider
+import com.metrolist.shared.db.MusicDatabase
+import com.metrolist.shared.spacesrec.LastFmSpaceTagResolver
+import com.metrolist.shared.spacesrec.SpaceRecEngine
+import com.metrolist.shared.state.GlobalYouTube
 import com.metrolist.shared.viewmodels.PlayerViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -67,10 +71,17 @@ val viewModelsModule =
         viewModelOf(::AccountViewModel)
         viewModel { HistoryViewModel(get<PlayHistoryRepository>(), get<CoroutineScope>()) }
         viewModelOf(::LibraryViewModel)
+        single {
+            SpaceRecEngine(
+                dao = get<MusicDatabase>().spaceRecDao(),
+                resolver = LastFmSpaceTagResolver(GlobalYouTube.client),
+            )
+        }
         viewModel {
             HomeViewModel(
                 database = get(),
                 likedSongsName = androidContext().getString(R.string.liked_songs),
+                spaceRecEngine = get(),
             )
         }
         viewModelOf(::SearchViewModel)

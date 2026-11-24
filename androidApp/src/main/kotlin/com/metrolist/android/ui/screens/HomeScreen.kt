@@ -106,6 +106,8 @@ import com.metrolist.shared.generated.resources.space_default_name
 import com.metrolist.shared.generated.resources.space_edit_title
 import com.metrolist.shared.generated.resources.space_shelf_albums
 import com.metrolist.shared.generated.resources.space_shelf_artists
+import com.metrolist.shared.generated.resources.space_shelf_fresh_picks
+import com.metrolist.shared.generated.resources.space_shelf_more_like
 import com.metrolist.shared.generated.resources.space_shelf_playlists
 import com.metrolist.shared.generated.resources.space_shelf_songs
 import com.metrolist.shared.generated.resources.try_again
@@ -168,13 +170,24 @@ fun HomeScreen(
     val spaceShelfAlbums = stringResource(Res.string.space_shelf_albums)
     val spaceShelfPlaylists = stringResource(Res.string.space_shelf_playlists)
     val spaceShelfArtists = stringResource(Res.string.space_shelf_artists)
+    val spaceShelfFreshPicks = stringResource(Res.string.space_shelf_fresh_picks)
+    val spaceShelfMoreLikeTemplate = stringResource(Res.string.space_shelf_more_like, "{artist}")
     val spaceShelfTitles =
-        remember(spaceShelfSongs, spaceShelfAlbums, spaceShelfPlaylists, spaceShelfArtists) {
+        remember(
+            spaceShelfSongs,
+            spaceShelfAlbums,
+            spaceShelfPlaylists,
+            spaceShelfArtists,
+            spaceShelfFreshPicks,
+            spaceShelfMoreLikeTemplate,
+        ) {
             SpaceFallbackShelfTitles(
                 songs = spaceShelfSongs,
                 albums = spaceShelfAlbums,
                 playlists = spaceShelfPlaylists,
                 artists = spaceShelfArtists,
+                freshPicks = spaceShelfFreshPicks,
+                moreLikeTemplate = spaceShelfMoreLikeTemplate,
             )
         }
 
