@@ -81,6 +81,7 @@ class SpaceGates(
         context: GateContext,
     ): GatePipelineResult {
         val drops = mutableMapOf<GateDropReason, Int>()
+
         fun recordDrop(reason: GateDropReason) {
             drops[reason] = (drops[reason] ?: 0) + 1
         }
@@ -110,6 +111,7 @@ class SpaceGates(
             }
 
         val trustCache = HashMap<String, Double>(structuralPassed.size)
+
         fun trustFor(song: SongItem): Double =
             trustCache.getOrPut(song.id) {
                 TrustScorer.score(song, isUserKnown = isSongArtistKnown(song, context.userKnownArtistIds), config = config)
@@ -283,6 +285,7 @@ class SpaceGates(
             object : ArtistProfileLookup {
                 override suspend fun getArtistProfile(artistId: String): ArtistProfileRecord? = null
             }
+
         fun isSongArtistKnown(
             song: SongItem,
             userKnownArtistIds: Set<String>,

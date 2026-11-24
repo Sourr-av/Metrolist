@@ -48,8 +48,18 @@ object SpaceRecDbAdapter {
         videoIds: Collection<String>,
         artistIds: Collection<String>,
     ): PreloadedSpaceMetadata {
-        val distinctVideos = videoIds.asSequence().filter(String::isNotBlank).distinct().toList()
-        val distinctArtists = artistIds.asSequence().filter(String::isNotBlank).distinct().toList()
+        val distinctVideos =
+            videoIds
+                .asSequence()
+                .filter(String::isNotBlank)
+                .distinct()
+                .toList()
+        val distinctArtists =
+            artistIds
+                .asSequence()
+                .filter(String::isNotBlank)
+                .distinct()
+                .toList()
 
         val tracks = HashMap<String, TrackClassRecord>(distinctVideos.size)
         for (chunk in distinctVideos.chunked(BATCH_CHUNK_SIZE)) {
@@ -80,7 +90,11 @@ object SpaceRecDbAdapter {
                 eventRows
                     .mapNotNull { it.artistId?.takeIf(String::isNotBlank) }
                     .distinct()
-            val durationMs = first.durationSeconds.takeIf { it > 0 }?.toLong()?.times(1000L)
+            val durationMs =
+                first.durationSeconds
+                    .takeIf { it > 0 }
+                    ?.toLong()
+                    ?.times(1000L)
             PlayRecord(
                 videoId = first.videoId,
                 artistIds = artistIds,

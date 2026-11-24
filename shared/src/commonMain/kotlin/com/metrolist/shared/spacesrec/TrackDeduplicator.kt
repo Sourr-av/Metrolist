@@ -61,7 +61,11 @@ object TrackDeduplicator {
 
     fun normalizedKey(song: SongItem): String {
         val normTitle = normalizeTitle(song.title)
-        val primaryArtist = song.artists.firstOrNull()?.name.orEmpty()
+        val primaryArtist =
+            song.artists
+                .firstOrNull()
+                ?.name
+                .orEmpty()
         val normArtist = normalizeArtist(primaryArtist)
         return "$normTitle|$normArtist"
     }
@@ -107,8 +111,10 @@ object TrackDeduplicator {
                 val nextTrust = trustProvider(next.song)
                 when {
                     nextTrust - bestTrust > 1e-9 -> next
+
                     abs(nextTrust - bestTrust) <= 1e-9 &&
                         typePreferenceRank(next.song) > typePreferenceRank(best.song) -> next
+
                     else -> best
                 }
             }

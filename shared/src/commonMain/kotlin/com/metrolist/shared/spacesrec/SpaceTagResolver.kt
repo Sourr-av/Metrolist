@@ -305,7 +305,9 @@ class LastFmSpaceTagResolver(
                     }
                 }
 
-                else -> Unit
+                else -> {
+                    Unit
+                }
             }
         }
 
@@ -416,7 +418,9 @@ class LastFmSpaceTagResolver(
                 call.value
             }
 
-            else -> null
+            else -> {
+                null
+            }
         }
     }
 
@@ -451,7 +455,9 @@ class LastFmSpaceTagResolver(
                 call.value
             }
 
-            else -> null
+            else -> {
+                null
+            }
         }
     }
 
@@ -478,7 +484,9 @@ class LastFmSpaceTagResolver(
                 call.value
             }
 
-            else -> null
+            else -> {
+                null
+            }
         }
     }
 

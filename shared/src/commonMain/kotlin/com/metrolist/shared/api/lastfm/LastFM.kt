@@ -19,7 +19,6 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.Parameters
 import io.ktor.http.decodeURLQueryComponent
 import io.ktor.http.encodeURLParameter
-import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.io.IOException
@@ -36,6 +35,7 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlin.concurrent.Volatile
 
 internal enum class LastFmLoginFailure { INVALID_CREDENTIALS, CONNECTION, SERVICE }
 
@@ -1159,7 +1159,12 @@ object LastFM {
                 else -> emptyList()
             }
         return tagObjects.mapNotNull { obj ->
-            val name = obj["name"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val name =
+                obj["name"]
+                    ?.jsonPrimitive
+                    ?.contentOrNull
+                    ?.trim()
+                    .orEmpty()
             if (name.isBlank()) return@mapNotNull null
             val countPrimitive = obj["count"]?.jsonPrimitive
             val count = countPrimitive?.intOrNull ?: countPrimitive?.contentOrNull?.toIntOrNull() ?: 1
@@ -1186,7 +1191,12 @@ object LastFM {
             }
         val tags =
             tagObjects.mapIndexedNotNull { index, obj ->
-                val name = obj["name"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+                val name =
+                    obj["name"]
+                        ?.jsonPrimitive
+                        ?.contentOrNull
+                        ?.trim()
+                        .orEmpty()
                 if (name.isBlank()) return@mapIndexedNotNull null
                 // artist.getInfo returns the artist's top 5 most-weighted tags in descending order without explicit counts.
                 val inferredCount = (100 - index * 12).coerceAtLeast(45)

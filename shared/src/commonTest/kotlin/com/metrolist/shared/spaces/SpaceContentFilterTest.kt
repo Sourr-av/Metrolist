@@ -60,8 +60,10 @@ class SpaceContentFilterTest {
                 FakeTagProvider(
                     trackMap =
                         mapOf(
-                            ("kendrick lamar" to "humble") to listOf(LastFmTag("hip-hop", 100), LastFmTag("rap", 90), LastFmTag("american", 60)),
-                            ("bad bunny" to "monaco") to listOf(LastFmTag("hip-hop", 100), LastFmTag("latin trap", 95), LastFmTag("spanish", 90)),
+                            ("kendrick lamar" to "humble") to
+                                listOf(LastFmTag("hip-hop", 100), LastFmTag("rap", 90), LastFmTag("american", 60)),
+                            ("bad bunny" to "monaco") to
+                                listOf(LastFmTag("hip-hop", 100), LastFmTag("latin trap", 95), LastFmTag("spanish", 90)),
                             ("creepy nuts" to "bling-bang-bang-born") to listOf(LastFmTag("hip-hop", 100), LastFmTag("japanese", 95)),
                             ("divine" to "mirchi") to listOf(LastFmTag("hip-hop", 100), LastFmTag("hindi", 90), LastFmTag("indian", 80)),
                         ),
@@ -143,7 +145,13 @@ class SpaceContentFilterTest {
                         mapOf(
                             "kanye west" to
                                 LastFmArtistProfile(
-                                    tags = listOf(LastFmTag("hip-hop", 100), LastFmTag("rap", 90), LastFmTag("pop", 60), LastFmTag("rnb", 50)),
+                                    tags =
+                                        listOf(
+                                            LastFmTag("hip-hop", 100),
+                                            LastFmTag("rap", 90),
+                                            LastFmTag("pop", 60),
+                                            LastFmTag("rnb", 50),
+                                        ),
                                     bioSummary = "Kanye West is an American rapper and producer from Chicago.",
                                 ),
                         ),
@@ -211,15 +219,27 @@ class SpaceContentFilterTest {
 
             assertEquals(
                 SpaceFilterDecision.ALLOW,
-                filter.evaluate(track, SpaceFilterSpec(languages = listOf("english"), genres = listOf("pop")), SpaceCandidateSource.HOME_FEED),
+                filter.evaluate(
+                    track,
+                    SpaceFilterSpec(languages = listOf("english"), genres = listOf("pop")),
+                    SpaceCandidateSource.HOME_FEED,
+                ),
             )
             assertEquals(
                 SpaceFilterDecision.ALLOW,
-                filter.evaluate(track, SpaceFilterSpec(languages = listOf("english"), genres = listOf("rock")), SpaceCandidateSource.HOME_FEED),
+                filter.evaluate(
+                    track,
+                    SpaceFilterSpec(languages = listOf("english"), genres = listOf("rock")),
+                    SpaceCandidateSource.HOME_FEED,
+                ),
             )
             assertEquals(
                 SpaceFilterDecision.REJECT_GENRE_CONFLICT,
-                filter.evaluate(track, SpaceFilterSpec(languages = listOf("english"), genres = listOf("hip_hop")), SpaceCandidateSource.HOME_FEED),
+                filter.evaluate(
+                    track,
+                    SpaceFilterSpec(languages = listOf("english"), genres = listOf("hip_hop")),
+                    SpaceCandidateSource.HOME_FEED,
+                ),
             )
         }
 

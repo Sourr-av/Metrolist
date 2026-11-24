@@ -100,7 +100,6 @@ import com.metrolist.shared.constants.HideRecentSearchesKey
 import com.metrolist.shared.constants.HideShortSongsKey
 import com.metrolist.shared.constants.HistoryPlaylistsEnabledKey
 import com.metrolist.shared.constants.HomeSpacesJsonKey
-import com.metrolist.shared.constants.SpacesLastFmApiKey
 import com.metrolist.shared.constants.KeepDownloadedPlaylistsJsonKey
 import com.metrolist.shared.constants.KeepPausedOnSongChangeKey
 import com.metrolist.shared.constants.KnownUploadIdsJsonKey
@@ -182,6 +181,7 @@ import com.metrolist.shared.constants.SleepTimerDefaultFinishCurrentSongKey
 import com.metrolist.shared.constants.SleepTimerDefaultMinutesKey
 import com.metrolist.shared.constants.SliderTrackThicknessDpKey
 import com.metrolist.shared.constants.SlimNavBarKey
+import com.metrolist.shared.constants.SpacesLastFmApiKey
 import com.metrolist.shared.constants.SpeedDialArtworkRefreshTimesKey
 import com.metrolist.shared.constants.SpeedDialSurprisePinnedKey
 import com.metrolist.shared.constants.SponsorBlockEnabledKey

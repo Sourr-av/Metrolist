@@ -52,9 +52,18 @@ object FeedAssembler {
 
         val maxMaybesAllowed =
             when {
-                acceptedPool.size >= config.minSongsBeforeMaybeAllowed -> 0
-                maybePool.isEmpty() -> 0
-                acceptedPool.isEmpty() -> (targetCount * config.maybeMaxShare).toInt()
+                acceptedPool.size >= config.minSongsBeforeMaybeAllowed -> {
+                    0
+                }
+
+                maybePool.isEmpty() -> {
+                    0
+                }
+
+                acceptedPool.isEmpty() -> {
+                    (targetCount * config.maybeMaxShare).toInt()
+                }
+
                 else -> {
                     val shareCapFromTarget = (targetCount * config.maybeMaxShare).toInt()
                     val shareCapFromAccepted =
@@ -87,7 +96,12 @@ object FeedAssembler {
                 } else {
                     assembled.takeLast(config.artistWindowSize - 1)
                 }
-            val lastArtistKey = assembled.lastOrNull()?.candidate?.primaryArtistKey.orEmpty()
+            val lastArtistKey =
+                assembled
+                    .lastOrNull()
+                    ?.candidate
+                    ?.primaryArtistKey
+                    .orEmpty()
 
             val windowArtistCounts = mutableMapOf<String, Int>()
             val windowAlbumCounts = mutableMapOf<String, Int>()
@@ -321,7 +335,12 @@ object FeedAssembler {
 
                 val anchorName =
                     topSeed?.second
-                        ?: remaining.first().song.artists.firstOrNull()?.name?.takeIf(String::isNotBlank)
+                        ?: remaining
+                            .first()
+                            .song.artists
+                            .firstOrNull()
+                            ?.name
+                            ?.takeIf(String::isNotBlank)
 
                 if (anchorName != null) {
                     val primaryMatch =

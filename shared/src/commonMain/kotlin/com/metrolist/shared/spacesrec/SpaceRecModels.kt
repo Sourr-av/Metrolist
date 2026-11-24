@@ -172,10 +172,20 @@ data class CandidateTrack(
                 .orEmpty()
 
     val primaryArtistId: String?
-        get() = song.artists.firstOrNull()?.id?.takeIf(String::isNotBlank)
+        get() =
+            song.artists
+                .firstOrNull()
+                ?.id
+                ?.takeIf(String::isNotBlank)
 
     val albumKey: String?
-        get() = song.album?.let { it.id?.takeIf(String::isNotBlank) ?: it.name.trim().lowercase().takeIf(String::isNotBlank) }
+        get() =
+            song.album?.let {
+                it.id?.takeIf(String::isNotBlank) ?: it.name
+                    .trim()
+                    .lowercase()
+                    .takeIf(String::isNotBlank)
+            }
 }
 
 data class GatedCandidate(

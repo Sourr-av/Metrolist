@@ -127,7 +127,15 @@ class SpaceRecEngineTest {
 
             assertEquals(listOf(SpaceFeedPhase.CACHE), freshEmissions.map { it.phase })
             assertTrue(freshEmissions.first().stats.elapsedMs < 300L)
-            assertEquals(listOf("cached_1"), freshEmissions.first().shelves.first().songs.map { it.id })
+            assertEquals(
+                listOf("cached_1"),
+                freshEmissions
+                    .first()
+                    .shelves
+                    .first()
+                    .songs
+                    .map { it.id },
+            )
             assertEquals(0, yt.callCount)
 
             // Pull-to-refresh (forceNetwork = true) -> skips CACHE, emits PARTIAL and FINAL.
@@ -338,8 +346,16 @@ class SpaceRecEngineTest {
                     ).toList()
                     .last { it.phase == SpaceFeedPhase.FINAL }
 
-            val homeShelfSongs = final.shelves.filterNot { it.isGenerated }.flatMap { it.songs }.map { it.id }
-            val generatedShelfSongs = final.shelves.filter { it.isGenerated }.flatMap { it.songs }.map { it.id }
+            val homeShelfSongs =
+                final.shelves
+                    .filterNot { it.isGenerated }
+                    .flatMap { it.songs }
+                    .map { it.id }
+            val generatedShelfSongs =
+                final.shelves
+                    .filter { it.isGenerated }
+                    .flatMap { it.songs }
+                    .map { it.id }
 
             assertTrue("heard_home" in homeShelfSongs)
             assertTrue("heard_local" in final.quickPicks.map { it.id })

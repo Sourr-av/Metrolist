@@ -143,7 +143,13 @@ class CircuitBreakerAndDbAdapterTest {
             assertEquals(1_230, preloaded.trackClasses.size)
             assertEquals(650, preloaded.artistProfiles.size)
             assertEquals("en", preloaded.trackClassLookup.getTrackClass("v_1230")?.language)
-            assertEquals(3.0, preloaded.artistProfileLookup.getArtistProfile("a_650")?.genreVotes?.get("rock"))
+            assertEquals(
+                3.0,
+                preloaded.artistProfileLookup
+                    .getArtistProfile("a_650")
+                    ?.genreVotes
+                    ?.get("rock"),
+            )
         }
 
     @Test

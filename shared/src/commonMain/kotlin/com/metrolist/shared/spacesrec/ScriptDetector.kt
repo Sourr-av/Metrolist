@@ -94,12 +94,19 @@ object ScriptDetector {
             -> WritingScript.LATIN
 
             in 0x0D00..0x0D7F -> WritingScript.MALAYALAM
+
             in 0x0900..0x097F -> WritingScript.DEVANAGARI
+
             in 0x0B80..0x0BFF -> WritingScript.TAMIL
+
             in 0x0C00..0x0C7F -> WritingScript.TELUGU
+
             in 0x0A00..0x0A7F -> WritingScript.GURMUKHI
+
             in 0x0C80..0x0CFF -> WritingScript.KANNADA
+
             in 0x0980..0x09FF -> WritingScript.BENGALI
+
             in 0x0A80..0x0AFF -> WritingScript.GUJARATI
 
             in 0xAC00..0xD7AF,

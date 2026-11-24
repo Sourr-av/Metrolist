@@ -84,11 +84,13 @@ object GlobalSpaceYouTubeSource : SpaceYouTubeSource {
     override suspend fun continueRadioQueue(continuation: String): RadioQueuePage =
         GlobalYouTubeRepository.instance.continueRadioQueue(continuation)
 
-    override suspend fun startArtistRadio(channelId: String): List<SongItem> =
-        GlobalYouTubeRepository.instance.startArtistRadio(channelId)
+    override suspend fun startArtistRadio(channelId: String): List<SongItem> = GlobalYouTubeRepository.instance.startArtistRadio(channelId)
 
     override suspend fun getAlbumSongs(albumId: String): List<SongItem> =
-        GlobalYouTubeRepository.instance.getAlbum(albumId, loadAllPages = false)?.songs.orEmpty()
+        GlobalYouTubeRepository.instance
+            .getAlbum(albumId, loadAllPages = false)
+            ?.songs
+            .orEmpty()
 
     override suspend fun getPlaylistSongs(playlistId: String): List<SongItem> =
         GlobalYouTubeRepository.instance
@@ -101,7 +103,7 @@ object GlobalSpaceYouTubeSource : SpaceYouTubeSource {
         GlobalYouTubeRepository.instance
             .searchFiltered(
                 query = query,
-                filter = SearchFilter.SONGS,
+                filter = SearchFilter.SONG,
                 recordSearchHistory = false,
                 allowOfflineFallback = false,
             ).items
@@ -301,11 +303,12 @@ class SpaceRecEngine(
                         for (artistId in topAffinityArtistIds) {
                             launch {
                                 val songs =
-                                    radioSemaphore.withPermit {
-                                        withTimeoutOrNull(config.perCallTimeoutMs) {
-                                            runCatchingNonCancellable { youtubeSource.startArtistRadio(artistId) }
-                                        }
-                                    }.orEmpty()
+                                    radioSemaphore
+                                        .withPermit {
+                                            withTimeoutOrNull(config.perCallTimeoutMs) {
+                                                runCatchingNonCancellable { youtubeSource.startArtistRadio(artistId) }
+                                            }
+                                        }.orEmpty()
                                 if (songs.isNotEmpty()) {
                                     val mapped =
                                         songs.map { song ->
@@ -397,16 +400,17 @@ class SpaceRecEngine(
                                 for (card in cardsToExpand) {
                                     launch {
                                         val songs =
-                                            radioSemaphore.withPermit {
-                                                withTimeoutOrNull(minOf(config.perCallTimeoutMs, remainingForStageB)) {
-                                                    runCatchingNonCancellable {
-                                                        when (card.kind) {
-                                                            HomeCardKind.ALBUM -> youtubeSource.getAlbumSongs(card.id)
-                                                            HomeCardKind.PLAYLIST -> youtubeSource.getPlaylistSongs(card.id)
+                                            radioSemaphore
+                                                .withPermit {
+                                                    withTimeoutOrNull(minOf(config.perCallTimeoutMs, remainingForStageB)) {
+                                                        runCatchingNonCancellable {
+                                                            when (card.kind) {
+                                                                HomeCardKind.ALBUM -> youtubeSource.getAlbumSongs(card.id)
+                                                                HomeCardKind.PLAYLIST -> youtubeSource.getPlaylistSongs(card.id)
+                                                            }
                                                         }
                                                     }
-                                                }
-                                            }.orEmpty()
+                                                }.orEmpty()
                                         if (songs.isNotEmpty()) {
                                             val mapped =
                                                 songs.map { song ->
@@ -452,11 +456,12 @@ class SpaceRecEngine(
                                 for (query in queries) {
                                     launch {
                                         val searchSongs =
-                                            radioSemaphore.withPermit {
-                                                withTimeoutOrNull(minOf(config.perCallTimeoutMs, remainingForStageC)) {
-                                                    runCatchingNonCancellable { youtubeSource.searchSongs(query) }
-                                                }
-                                            }.orEmpty()
+                                            radioSemaphore
+                                                .withPermit {
+                                                    withTimeoutOrNull(minOf(config.perCallTimeoutMs, remainingForStageC)) {
+                                                        runCatchingNonCancellable { youtubeSource.searchSongs(query) }
+                                                    }
+                                                }.orEmpty()
                                         if (searchSongs.isEmpty()) return@launch
 
                                         val searchCandidates =
@@ -668,8 +673,7 @@ class SpaceRecEngine(
         }
     }
 
-    internal suspend fun provenanceFor(videoId: String): TrackProvenance? =
-        provenanceMutex.withLock { provenanceByVideoId[videoId] }
+    internal suspend fun provenanceFor(videoId: String): TrackProvenance? = provenanceMutex.withLock { provenanceByVideoId[videoId] }
 
     private suspend fun loadDbInputs(
         spaceId: String,
@@ -749,7 +753,9 @@ class SpaceRecEngine(
                             )
                     }
 
-                    else -> Unit
+                    else -> {
+                        Unit
+                    }
                 }
             }
             if (shelfSongs.isNotEmpty()) {

@@ -136,8 +136,7 @@ object SpaceLanguageRegistry {
         return cleaned
     }
 
-    fun isInstrumental(slugOrCode: String): Boolean =
-        resolve(slugOrCode)?.isInstrumental == true
+    fun isInstrumental(slugOrCode: String): Boolean = resolve(slugOrCode)?.isInstrumental == true
 
     /**
      * Resolves a Space's configured language list into structured targets for the language gate.
