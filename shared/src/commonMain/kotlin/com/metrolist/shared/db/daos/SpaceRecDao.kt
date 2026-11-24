@@ -167,4 +167,7 @@ interface SpaceRecDao {
 
     @Query("SELECT DISTINCT songId FROM event")
     suspend fun getAllEverPlayedVideoIds(): List<String>
+
+    @Query("SELECT duration FROM song WHERE id = :videoId")
+    suspend fun getSongDurationSeconds(videoId: String): Int?
 }

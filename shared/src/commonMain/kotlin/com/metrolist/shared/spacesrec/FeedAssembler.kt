@@ -32,6 +32,7 @@ object FeedAssembler {
         ranked: List<RankedCandidate>,
         homeShelves: List<HomeShelfSeed> = emptyList(),
         shelfLabels: SpaceShelfLabels,
+        recentlyHeardVideoIds: Set<String> = emptySet(),
         config: SpaceRecConfig = SpaceRecConfig.Default,
         random: Random = Random.Default,
     ): AssembledFeed {
@@ -143,7 +144,7 @@ object FeedAssembler {
             if (chosen.gated.isMaybe) maybeCount++
         }
 
-        val shelves = buildShelves(assembled, homeShelves, shelfLabels, config)
+        val shelves = buildShelves(assembled, homeShelves, shelfLabels, recentlyHeardVideoIds, config)
 
         val artistFreq =
             assembled
@@ -219,6 +220,7 @@ object FeedAssembler {
         assembled: List<RankedCandidate>,
         homeShelves: List<HomeShelfSeed>,
         labels: SpaceShelfLabels,
+        recentlyHeardVideoIds: Set<String>,
         config: SpaceRecConfig,
     ): List<AssembledShelf> {
         if (assembled.isEmpty()) return emptyList()
@@ -279,14 +281,14 @@ object FeedAssembler {
                 )
         }
 
-        // 2. Add up to maxGeneratedShelves (2) generated shelves from unused assembled songs.
+        // 2. Add up to maxGeneratedShelves (2) generated shelves from unused, non-heard assembled songs.
         var generatedCount = 0
 
         if (generatedCount < config.maxGeneratedShelves) {
             val freshSongs =
                 assembled
                     .asSequence()
-                    .filter { it.song.id !in placedIds }
+                    .filter { it.song.id !in placedIds && it.song.id !in recentlyHeardVideoIds }
                     .take(GENERATED_SHELF_MAX_ITEMS)
                     .map { it.song }
                     .toList()
@@ -304,7 +306,7 @@ object FeedAssembler {
         }
 
         if (generatedCount < config.maxGeneratedShelves) {
-            val remaining = assembled.filter { it.song.id !in placedIds }
+            val remaining = assembled.filter { it.song.id !in placedIds && it.song.id !in recentlyHeardVideoIds }
             if (remaining.isNotEmpty()) {
                 val topSeed =
                     remaining

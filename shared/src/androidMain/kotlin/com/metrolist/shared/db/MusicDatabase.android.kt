@@ -58,6 +58,7 @@ actual fun getDatabaseBuilder(context: Any?): RoomDatabase.Builder<MusicDatabase
             MIGRATION_66_67,
             MIGRATION_67_68,
             MIGRATION_68_69,
+            MIGRATION_69_70,
         )
 }
 

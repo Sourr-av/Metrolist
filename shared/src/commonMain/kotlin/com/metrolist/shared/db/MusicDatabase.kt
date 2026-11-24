@@ -50,7 +50,12 @@ import com.metrolist.shared.db.entities.SpeedDialItem
 import com.metrolist.shared.db.entities.TrackClassEntity
 import com.metrolist.shared.scrobble.PendingScrobble
 
-const val DATABASE_VERSION = 69
+const val DATABASE_VERSION = 70
+
+internal val MIGRATION_69_70_SQL =
+    listOf(
+        "ALTER TABLE artist_profile ADD COLUMN genreVotesJson TEXT NOT NULL DEFAULT '{}'",
+    )
 
 internal val MIGRATION_68_69_SQL =
     listOf(

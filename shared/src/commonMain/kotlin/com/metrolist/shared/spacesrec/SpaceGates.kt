@@ -55,12 +55,13 @@ data class GateContext(
 class SpaceGates(
     private val trackClassLookup: TrackClassLookup,
     private val languageCascade: LanguageCascade,
+    private val artistProfileLookup: ArtistProfileLookup = NoOpArtistProfileLookup,
     private val config: SpaceRecConfig = SpaceRecConfig.Default,
 ) {
     /**
      * Space with empty genres AND empty languages:
-     * return the Home pipeline songs unchanged except for the trust gate and heard exclusion.
-     * No seeds, no re-ranking, original order preserved.
+     * return the Home pipeline songs unchanged except for the trust gate.
+     * Home songs are exempt from heard exclusion.
      */
     fun bypassEmptyConstraints(
         homeSongs: List<SongItem>,
@@ -70,7 +71,6 @@ class SpaceGates(
     ): List<SongItem> =
         homeSongs.filter { song ->
             if (song.id.isBlank() || song.isPodcast || isBlocked(song)) return@filter false
-            if (song.id in recentlyHeardVideoIds) return@filter false
             val isUserKnown = isSongArtistKnown(song, userKnownArtistIds)
             val trust = TrustScorer.score(song, isUserKnown = isUserKnown, config = config)
             trust >= config.trustGate || isUserKnown
@@ -127,7 +127,9 @@ class SpaceGates(
             val song = candidate.song
 
             // G2 heard / queued / shown exclusions.
-            if (song.id in context.recentlyHeardVideoIds) {
+            // Heard exclusion applies only to SEED_RADIO, ARTIST_RADIO, and SEARCH (not HOME, HOME_CARD, or LOCAL_HISTORY).
+            val heardExempt = candidate.sources.any { it.isHeardExclusionExempt }
+            if (!heardExempt && song.id in context.recentlyHeardVideoIds) {
                 recordDrop(GateDropReason.HEARD_RECENTLY)
                 continue
             }
@@ -162,11 +164,12 @@ class SpaceGates(
             }
 
             // G5 genre gate (only when the Space has genres or "instrumental").
-            val genreVerdict =
+            // Order: track_class.genre -> settled artist genre verdict -> seedGenreAccepted -> MAYBE (high L5 priority).
+            val (genreVerdict, genreHighPriority) =
                 if (effectiveGenres.isEmpty()) {
-                    GateVerdict.ACCEPT
+                    GateVerdict.ACCEPT to false
                 } else {
-                    evaluateGenreGate(candidate, effectiveGenres)
+                    evaluateGenreGate(candidate, effectiveGenres, context.nowMs)
                 }
             if (genreVerdict == GateVerdict.REJECT) {
                 recordDrop(GateDropReason.GENRE_REJECTED)
@@ -180,6 +183,7 @@ class SpaceGates(
                     trust = trust,
                     languageResult = languageResult,
                     genreVerdict = genreVerdict,
+                    genreHighPriorityForL5 = genreHighPriority,
                 )
             if (gated.isFullyAccepted) acceptCount++ else maybeCount++
             survivors += gated
@@ -219,7 +223,8 @@ class SpaceGates(
     private suspend fun evaluateGenreGate(
         candidate: CandidateTrack,
         requestedGenres: List<String>,
-    ): GateVerdict {
+        nowMs: Long,
+    ): Pair<GateVerdict, Boolean> {
         val cached = trackClassLookup.getTrackClass(candidate.song.id)
         val cachedGenreRaw = cached?.genre?.trim().orEmpty()
 
@@ -229,28 +234,55 @@ class SpaceGates(
                     .split(',', ';', '|')
                     .map(String::trim)
                     .filter(String::isNotEmpty)
-            val matches =
-                requestedGenres.any { requested ->
-                    if (requested.equals(SpaceLanguageRegistry.INSTRUMENTAL_SLUG, ignoreCase = true)) {
-                        tags.any { tag ->
-                            val norm = SpaceFilterTaxonomy.normalizeTag(tag)
-                            norm == "instrumental" || norm.contains("instrumental") || norm == "no vocals"
-                        }
+            val verdict = if (tagsMatchAnyRequestedGenre(tags, requestedGenres)) GateVerdict.ACCEPT else GateVerdict.REJECT
+            return verdict to false
+        }
+
+        // Artist-level settled genre verdict.
+        val artistId = candidate.primaryArtistId
+        if (!artistId.isNullOrBlank()) {
+            val artistSettledGenre = artistProfileLookup.getArtistProfile(artistId)?.settledGenre(nowMs, config)
+            if (!artistSettledGenre.isNullOrBlank()) {
+                val verdict =
+                    if (tagsMatchAnyRequestedGenre(listOf(artistSettledGenre), requestedGenres)) {
+                        GateVerdict.ACCEPT
                     } else {
-                        SpaceFilterTaxonomy.tagsMatchRequestedGenre(tags, requested)
+                        GateVerdict.REJECT
                     }
-                }
-            return if (matches) GateVerdict.ACCEPT else GateVerdict.REJECT
+                return verdict to false
+            }
         }
 
         // Unknown genre from a seeded radio whose seed matches the genre -> ACCEPT.
         if (CandidateSource.SEED_RADIO in candidate.sources && candidate.seedGenreAccepted) {
-            return GateVerdict.ACCEPT
+            return GateVerdict.ACCEPT to false
         }
-        return GateVerdict.MAYBE
+
+        // Otherwise MAYBE with high L5 priority.
+        return GateVerdict.MAYBE to true
     }
 
+    private fun tagsMatchAnyRequestedGenre(
+        tags: List<String>,
+        requestedGenres: List<String>,
+    ): Boolean =
+        requestedGenres.any { requested ->
+            if (requested.equals(SpaceLanguageRegistry.INSTRUMENTAL_SLUG, ignoreCase = true)) {
+                tags.any { tag ->
+                    val norm = SpaceFilterTaxonomy.normalizeTag(tag)
+                    norm == "instrumental" || norm.contains("instrumental") || norm == "no vocals"
+                }
+            } else {
+                tags.any { tag -> tag.equals(requested, ignoreCase = true) } ||
+                    SpaceFilterTaxonomy.tagsMatchRequestedGenre(tags, requested)
+            }
+        }
+
     companion object {
+        private val NoOpArtistProfileLookup =
+            object : ArtistProfileLookup {
+                override suspend fun getArtistProfile(artistId: String): ArtistProfileRecord? = null
+            }
         fun isSongArtistKnown(
             song: SongItem,
             userKnownArtistIds: Set<String>,

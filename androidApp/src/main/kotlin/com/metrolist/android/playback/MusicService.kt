@@ -130,6 +130,7 @@ import com.metrolist.shared.settings.MusicVideoQuality
 import com.metrolist.shared.settings.Settings
 import com.metrolist.shared.settings.displayName
 import com.metrolist.shared.settings.getAutomotivePinnedPlaylists
+import com.metrolist.shared.spacesrec.SpaceRecEngine
 import com.metrolist.shared.state.GlobalYouTubeRepository
 import com.metrolist.shared.state.PodcastLibrary
 import com.metrolist.shared.state.PodcastPlaybackProgress
@@ -535,7 +536,20 @@ class MusicService :
                 awaitLikes = { (application as App).startup.await() },
             )
         scrobbleManager = ScrobbleManager(serviceScope)
-        listeningHistory = AndroidListeningHistory(player, serviceScope, getKoin().get<PlayHistoryRepository>()::recordLocalPlay)
+        val spaceRecEngine = getKoin().get<SpaceRecEngine>()
+        listeningHistory =
+            AndroidListeningHistory(
+                player = player,
+                scope = serviceScope,
+                recordPlay = getKoin().get<PlayHistoryRepository>()::recordLocalPlay,
+                onLocalPlayRecorded = { song, playTimeMs ->
+                    spaceRecEngine.recordPlay(
+                        videoId = song.id,
+                        playedMs = playTimeMs,
+                        durationMs = song.duration?.takeIf { it > 0L }?.times(1000L),
+                    )
+                },
+            )
         syncPlayback =
             AndroidDeviceConnectPlayback(
                 context = this,

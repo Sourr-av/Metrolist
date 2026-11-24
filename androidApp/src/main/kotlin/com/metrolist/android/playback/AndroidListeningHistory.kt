@@ -21,6 +21,7 @@ internal class AndroidListeningHistory(
     private val player: AndroidPlaybackPlayer,
     private val scope: CoroutineScope,
     private val recordPlay: suspend (SongItem, Long) -> Unit,
+    private val onLocalPlayRecorded: (suspend (SongItem, Long) -> Unit)? = null,
     private val nowMs: () -> Long = SystemClock::elapsedRealtime,
     private val writerScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) {
@@ -122,6 +123,17 @@ internal class AndroidListeningHistory(
             throw error
         } catch (error: Exception) {
             Logger.w(REPORTING_TAG, "local-history outcome=failure type=${error::class.simpleName}")
+        }
+        if (onLocalPlayRecorded != null) {
+            try {
+                withContext(Dispatchers.IO) {
+                    onLocalPlayRecorded.invoke(song, playTimeMs)
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                // Space bandit recording must never disrupt local history reporting.
+            }
         }
     }
 }

@@ -8,6 +8,7 @@ import com.metrolist.shared.settings.HomeSpace
 import com.metrolist.shared.settings.HomeSpaces
 import com.metrolist.shared.settings.Settings
 import com.metrolist.shared.spaces.SpaceFallbackShelfTitles
+import com.metrolist.shared.spacesrec.SpaceRecEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -21,13 +22,20 @@ import com.metrolist.shared.viewmodels.HomeViewModel as SharedHomeViewModel
 class HomeViewModel(
     private val database: MusicDatabase,
     private val likedSongsName: String,
+    private val spaceRecEngine: SpaceRecEngine,
 ) : ViewModel() {
     private data class SpaceHomeSession(
         val scope: CoroutineScope,
         val model: SharedHomeViewModel,
     )
 
-    val shared = SharedHomeViewModel(database, viewModelScope, likedSongsName = likedSongsName)
+    val shared =
+        SharedHomeViewModel(
+            database = database,
+            scope = viewModelScope,
+            likedSongsName = likedSongsName,
+            spaceRecEngine = spaceRecEngine,
+        )
 
     private val _spaces = MutableStateFlow(HomeSpaces.all())
     val spaces: StateFlow<List<HomeSpace>> = _spaces.asStateFlow()
@@ -62,8 +70,10 @@ class HomeViewModel(
                             scope = spaceScope,
                             likedSongsName = likedSongsName,
                             persistLastHomePage = false,
+                            initialSpaceId = space.id,
                             initialSpaceFilter = space.filterSpec.takeIf { it.isActive },
                             spaceShelfTitles = shelfTitles,
+                            spaceRecEngine = spaceRecEngine,
                         ),
                 )
             }.model
@@ -116,7 +126,7 @@ class HomeViewModel(
         _spaces.value = updatedSpaces
         val updatedSpace = updatedSpaces.firstOrNull { it.id == spaceId }
         val newFilter = updatedSpace?.filterSpec?.takeIf { it.isActive }
-        spaceSessions[spaceId]?.model?.updateSpaceFilter(newFilter)
+        spaceSessions[spaceId]?.model?.updateSpaceFilter(spaceId, newFilter)
     }
 
     fun saveLastFmApiKey(apiKey: String) {

@@ -26,8 +26,10 @@ class SpaceGatesAndRankerTest {
         override suspend fun getTrackClass(videoId: String): TrackClassRecord? = map[videoId]
     }
 
-    private class EmptyArtistLookup : ArtistProfileLookup {
-        override suspend fun getArtistProfile(artistId: String): ArtistProfileRecord? = null
+    private class EmptyArtistLookup(
+        private val map: Map<String, ArtistProfileRecord> = emptyMap(),
+    ) : ArtistProfileLookup {
+        override suspend fun getArtistProfile(artistId: String): ArtistProfileRecord? = map[artistId]
     }
 
     private fun song(
@@ -52,7 +54,7 @@ class SpaceGatesAndRankerTest {
         )
 
     @Test
-    fun emptyConstraintBypassPreservesOrderAndAppliesOnlyTrustAndHeard() {
+    fun emptyConstraintBypassPreservesOrderAndAppliesTrustWithoutHeardExclusionOnHome() {
         val trackLookup = EmptyTrackLookup()
         val gates = SpaceGates(trackLookup, LanguageCascade(trackLookup, EmptyArtistLookup()))
 
@@ -71,7 +73,8 @@ class SpaceGatesAndRankerTest {
                 recentlyHeardVideoIds = setOf("s2"),
             )
 
-        assertEquals(listOf("s1", "s4", "s5"), result.map { it.id })
+        // Spec 0a: Home shelves are exempt from heard exclusion; only non-musical, blocked, and low-trust are dropped.
+        assertEquals(listOf("s1", "s2", "s4", "s5"), result.map { it.id })
     }
 
     @Test
@@ -102,7 +105,7 @@ class SpaceGatesAndRankerTest {
 
             val candidates =
                 listOf(
-                    CandidateTrack(song("heard_id", "മലയാളം ഒന്ന്"), setOf(CandidateSource.HOME)),
+                    CandidateTrack(song("heard_id", "മലയാളം ഒന്ന്"), setOf(CandidateSource.SEED_RADIO)),
                     CandidateTrack(song("queued_id", "മലയാളം രണ്ട്"), setOf(CandidateSource.HOME)),
                     CandidateTrack(song("blocked_id", "മലയാളം മൂന്ന്"), setOf(CandidateSource.HOME)),
                     CandidateTrack(song("wrong_lang", "봄날", artistName = "BTS"), setOf(CandidateSource.HOME)),
@@ -120,15 +123,100 @@ class SpaceGatesAndRankerTest {
                     isBlocked = { it.id == "blocked_id" },
                 )
 
-            // Strict pass drops shown_id too.
+            // Strict pass drops heard_id (SEED_RADIO) and shown_id.
             val strict = gates.evaluate(candidates, context)
             assertEquals(listOf("fresh_id"), strict.survivors.map { it.candidate.song.id })
+            assertEquals(1, strict.stats.drops[GateDropReason.HEARD_RECENTLY])
             assertEquals(1, strict.stats.drops[GateDropReason.SHOWN_RECENTLY])
 
             // Because survivors (1) < feedTargetSongs / 2 (30), relaxation restores ONLY shown_id!
             val relaxed = gates.evaluateWithShownRelaxation(candidates, context)
             assertTrue(relaxed.stats.shownExclusionRelaxed)
             assertEquals(listOf("shown_id", "fresh_id"), relaxed.survivors.map { it.candidate.song.id })
+        }
+
+    @Test
+    fun heardExclusionExemptsHomeAndLocalHistoryButExcludesRadioAndSearch() =
+        runTest {
+            val trackLookup = EmptyTrackLookup()
+            val gates = SpaceGates(trackLookup, LanguageCascade(trackLookup, EmptyArtistLookup()))
+
+            val candidates =
+                listOf(
+                    CandidateTrack(song("home_heard", "മലയാളം ഒന്ന്"), setOf(CandidateSource.HOME)),
+                    CandidateTrack(song("card_heard", "മലയാളം രണ്ട്"), setOf(CandidateSource.HOME_CARD)),
+                    CandidateTrack(song("local_heard", "മലയാളം മൂന്ന്"), setOf(CandidateSource.LOCAL_HISTORY)),
+                    CandidateTrack(song("seed_heard", "മലയാളം നാല്"), setOf(CandidateSource.SEED_RADIO)),
+                    CandidateTrack(song("artist_heard", "മലയാളം അഞ്ച്"), setOf(CandidateSource.ARTIST_RADIO)),
+                    CandidateTrack(song("search_heard", "മലയാളം ആറ്"), setOf(CandidateSource.SEARCH)),
+                )
+
+            val context =
+                GateContext(
+                    nowMs = nowMs,
+                    filter = SpaceFilterSpec(languages = listOf("malayalam")),
+                    recentlyHeardVideoIds = candidates.mapTo(hashSetOf()) { it.song.id },
+                )
+
+            val result = gates.evaluate(candidates, context)
+            assertEquals(listOf("home_heard", "card_heard", "local_heard"), result.survivors.map { it.candidate.song.id })
+            assertEquals(3, result.stats.drops[GateDropReason.HEARD_RECENTLY])
+        }
+
+    @Test
+    fun genreGateChecksTrackThenSettledArtistGenreThenSeedThenHighPriorityMaybe() =
+        runTest {
+            val trackLookup =
+                EmptyTrackLookup(
+                    mapOf(
+                        "t_track_ok" to TrackClassRecord("t_track_ok", language = "en", genre = "jazz", checkedAt = nowMs),
+                        "t_track_bad" to TrackClassRecord("t_track_bad", language = "en", genre = "metal", checkedAt = nowMs),
+                    ),
+                )
+            val artistLookup =
+                EmptyArtistLookup(
+                    mapOf(
+                        "a_jazz" to
+                            ArtistProfileRecord(
+                                artistId = "a_jazz",
+                                name = "Miles",
+                                languageVotes = mapOf("en" to 5.0),
+                                totalVotes = 5.0,
+                                updatedAt = nowMs,
+                                genreVotes = mapOf("jazz" to 5.0),
+                            ),
+                        "a_rock" to
+                            ArtistProfileRecord(
+                                artistId = "a_rock",
+                                name = "RockBand",
+                                languageVotes = mapOf("en" to 5.0),
+                                totalVotes = 5.0,
+                                updatedAt = nowMs,
+                                genreVotes = mapOf("rock" to 5.0),
+                            ),
+                    ),
+                )
+            val gates = SpaceGates(trackLookup, LanguageCascade(trackLookup, artistLookup), artistProfileLookup = artistLookup)
+
+            val candidates =
+                listOf(
+                    CandidateTrack(song("t_track_ok", artistId = "a_unknown"), setOf(CandidateSource.HOME)),
+                    CandidateTrack(song("t_track_bad", artistId = "a_jazz"), setOf(CandidateSource.HOME)),
+                    CandidateTrack(song("t_artist_ok", artistId = "a_jazz"), setOf(CandidateSource.HOME)),
+                    CandidateTrack(song("t_artist_bad", artistId = "a_rock"), setOf(CandidateSource.HOME)),
+                    CandidateTrack(song("t_seed_ok", artistId = "a_unknown2"), setOf(CandidateSource.SEED_RADIO), seedGenreAccepted = true),
+                    CandidateTrack(song("t_unknown", artistId = "a_unknown3"), setOf(CandidateSource.HOME)),
+                )
+
+            val result = gates.evaluate(candidates, GateContext(nowMs = nowMs, filter = SpaceFilterSpec(genres = listOf("jazz"))))
+            val byId = result.survivors.associateBy { it.candidate.song.id }
+            assertEquals(setOf("t_track_ok", "t_artist_ok", "t_seed_ok", "t_unknown"), byId.keys)
+            assertEquals(GateVerdict.ACCEPT, byId.getValue("t_track_ok").genreVerdict)
+            assertEquals(GateVerdict.ACCEPT, byId.getValue("t_artist_ok").genreVerdict)
+            assertEquals(GateVerdict.ACCEPT, byId.getValue("t_seed_ok").genreVerdict)
+            assertEquals(GateVerdict.MAYBE, byId.getValue("t_unknown").genreVerdict)
+            assertTrue(byId.getValue("t_unknown").genreHighPriorityForL5)
+            assertEquals(2, result.stats.drops[GateDropReason.GENRE_REJECT])
         }
 
     @Test
