@@ -185,9 +185,21 @@ class SpaceRecEngine(
                 }
             val cachedPayload = cachedRow?.let { SpaceRecDbAdapter.decodeCachedPayload(it.payloadJson) }
             val cacheAgeMs = cachedRow?.let { (clock() - it.savedAt).coerceAtLeast(0L) }
-            val cacheIsFresh = cacheAgeMs != null && cacheAgeMs <= config.cacheTtlMs
+            // An empty cached feed must never be treated as fresh: otherwise a single empty
+            // refresh (e.g. before L5 had a chance to verify anything) poisons the Space for
+            // the whole cache TTL and L5 never retries. Empty payloads fall through to a full
+            // refresh so verification can run.
+            val cachedHasContent =
+                cachedPayload != null &&
+                    (
+                        cachedPayload.shelves.any { it.songs.isNotEmpty() } ||
+                            cachedPayload.quickPicks.isNotEmpty() ||
+                            cachedPayload.keepListening.isNotEmpty() ||
+                            cachedPayload.forgottenFavorites.isNotEmpty()
+                    )
+            val cacheIsFresh = cacheAgeMs != null && cacheAgeMs <= config.cacheTtlMs && cachedHasContent
 
-            if (cachedPayload != null && !forceNetwork) {
+            if (cachedPayload != null && cachedHasContent && !forceNetwork) {
                 recordCachedProvenance(spaceId, cachedPayload)
                 val cacheStats =
                     SpaceRefreshStats(
@@ -1220,9 +1232,13 @@ class SpaceRecEngine(
                 everPlayedVideoIds = dbInputs.everPlayedIds,
                 config = config,
             )
-        // Rule (1): Constrained Spaces never include MAYBE tracks in assembled feeds;
-        // tracks must resolve to ACCEPT (including via L5 -> RESOLVED_UPDATE).
-        val allowMaybe = !filter.isActive
+        // Graceful degradation: MAYBE tracks (unknown language/genre, no conflicting signals)
+        // may fill the feed up to FeedAssembler's quota (0% when >= 40 ACCEPT exist, <= 25%
+        // otherwise) so constrained Spaces show best-effort content immediately instead of an
+        // empty state while L5 verification is pending or unavailable. Tracks with conflicting
+        // signals (REJECT) are still dropped in the gates and never reach the assembler, and
+        // L5 upgrades/removes MAYBE tracks in the background via RESOLVED_UPDATE.
+        val allowMaybe = true
         var assembled =
             FeedAssembler.assemble(
                 ranked = ranked,
@@ -1283,12 +1299,13 @@ class SpaceRecEngine(
             }
         }
 
-        // Local history shelves are exempt from heard exclusion (CandidateSource.LOCAL_HISTORY) and shown exclusion,
-        // and obey Rule (1): only verified ACCEPT tracks when the Space has active constraints.
+        // Local history shelves are exempt from heard exclusion (CandidateSource.LOCAL_HISTORY) and shown exclusion.
+        // They show ACCEPT + MAYBE tracks (REJECTED tracks with conflicting signals are still dropped) so the
+        // user's own history surfaces immediately; MAYBE tracks remain in localUnresolved for L5 verification.
         val localContext = gateContext.copy(relaxShownExclusion = true)
-        val gatedQuickPicks = gateLocalShelf(homeInput.localQuickPicks, gates, localContext, requireFullyAccepted = filter.isActive)
-        val gatedKeepListening = gateLocalShelf(homeInput.localKeepListening, gates, localContext, requireFullyAccepted = filter.isActive)
-        val gatedForgotten = gateLocalShelf(homeInput.localForgottenFavorites, gates, localContext, requireFullyAccepted = filter.isActive)
+        val gatedQuickPicks = gateLocalShelf(homeInput.localQuickPicks, gates, localContext, requireFullyAccepted = false)
+        val gatedKeepListening = gateLocalShelf(homeInput.localKeepListening, gates, localContext, requireFullyAccepted = false)
+        val gatedForgotten = gateLocalShelf(homeInput.localForgottenFavorites, gates, localContext, requireFullyAccepted = false)
         val localUnresolved =
             (gatedQuickPicks.unresolved + gatedKeepListening.unresolved + gatedForgotten.unresolved)
                 .distinctBy { it.candidate.song.id }

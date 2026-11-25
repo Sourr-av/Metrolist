@@ -437,7 +437,7 @@ class SpaceRecEngineTest {
         }
 
     @Test
-    fun rule1MaybeTracksExcludedFromFinalAndIncludedOnlyInResolvedUpdateAfterL5Accepts() =
+    fun maybeTracksShownAsFallbackUntilL5VerifiesAndRejects() =
         runTest {
             val dao = FakeSpaceRecDao()
             val yt = FakeSpaceYouTubeSource()
@@ -507,18 +507,23 @@ class SpaceRecEngineTest {
                 emissions.map { it.phase },
             )
 
-            // PARTIAL and FINAL must contain ZERO unverified MAYBE tracks (neither in shelves nor local shelves).
+            // Graceful degradation: before L5, PARTIAL/FINAL show unverified MAYBE tracks as best-effort
+            // content (REJECTED tracks would still be dropped) instead of an empty state.
             val partialEmission = emissions[0]
             val finalEmission = emissions[1]
-            assertTrue(partialEmission.shelves.flatMap { it.songs }.isEmpty())
-            assertTrue(finalEmission.shelves.flatMap { it.songs }.isEmpty())
-            assertTrue(finalEmission.quickPicks.isEmpty())
+            val partialIds = partialEmission.shelves.flatMap { it.songs }.map { it.id }.toSet()
+            assertEquals(setOf("vgm_1", "rap_1", "movie_1", "still_maybe_1"), partialIds)
+            val finalIds = finalEmission.shelves.flatMap { it.songs }.map { it.id }.toSet()
+            assertEquals(setOf("vgm_1", "rap_1", "movie_1", "still_maybe_1"), finalIds)
+            assertEquals(listOf("rap_1", "still_maybe_1"), finalEmission.quickPicks.map { it.id })
 
-            // RESOLVED_UPDATE includes ONLY vgm_1 after L5 verifies it to ACCEPT; rap, movie, and still-MAYBE remain excluded.
+            // RESOLVED_UPDATE: L5 verifies vgm_1 to ACCEPT and rejects rap/movie (wrong genre/language).
+            // still_maybe_1 stays MAYBE but is excluded from shelves because the MAYBE quota is 0 with 1 ACCEPT;
+            // it remains visible in local Quick Picks (user history) pending verification.
             val resolvedEmission = emissions[2]
             val resolvedSongIds = resolvedEmission.shelves.flatMap { it.songs }.map { it.id }
             assertEquals(listOf("vgm_1"), resolvedSongIds)
-            assertTrue(resolvedEmission.quickPicks.isEmpty())
+            assertEquals(listOf("still_maybe_1"), resolvedEmission.quickPicks.map { it.id })
         }
 
     @Test
@@ -701,7 +706,9 @@ class SpaceRecEngineTest {
 
             val finalEmission = emissions.first { it.phase == SpaceFeedPhase.FINAL }
             assertTrue(finalEmission.l5Pending, "FINAL must signal l5Pending=true while L5 is resolving local MAYBE tracks")
-            assertTrue(finalEmission.quickPicks.isEmpty())
+            // Local history shows as MAYBE fallback before L5 verifies it (no empty state).
+            assertEquals(listOf("rap_local_1"), finalEmission.quickPicks.map { it.id })
+            assertEquals(listOf("rap_local_2"), finalEmission.keepListening.map { it.id })
 
             val resolvedEmission = emissions.last { it.phase == SpaceFeedPhase.RESOLVED_UPDATE }
             assertFalse(resolvedEmission.l5Pending)
@@ -712,6 +719,88 @@ class SpaceRecEngineTest {
             val profile = dao.artistProfiles["a_kendrick"]
             assertNotNull(profile)
             assertTrue(profile.totalVotes >= 3.0f, "Expected settled artist profile votes, got ${profile.totalVotes}")
+        }
+
+    @Test
+    fun coldStartEnglishRapWithoutL5ShowsMaybeFallbackInsteadOfEmptyFeed() =
+        runTest {
+            val dao = FakeSpaceRecDao()
+            val engine =
+                SpaceRecEngine(
+                    dao = dao,
+                    // No Last.fm key configured -> L5 unavailable; feed must still show best-effort content.
+                    resolver = FakeSpaceTagResolver(isAvailable = false),
+                    clock = { baseTimeMs + currentTime },
+                    random = Random(15),
+                    youtubeSource = FakeSpaceYouTubeSource(),
+                    isBlocked = { false },
+                )
+
+            val rapSongs = (1..8).map { i -> song("cold_rap_$i", "Rap Track $i", artistId = "a_cold_$i") }
+
+            val finalEmission =
+                engine
+                    .refresh(
+                        spaceId = "space_cold_rap",
+                        filter = SpaceFilterSpec(languages = listOf("english"), genres = listOf("hip_hop")),
+                        homeInput =
+                            SpaceHomeInput(
+                                primarySections = listOf(HomeSection("Home", rapSongs)),
+                                localQuickPicks = rapSongs.take(2),
+                                shelfLabels = defaultLabels,
+                            ),
+                    ).toList()
+                    .last { it.phase == SpaceFeedPhase.FINAL }
+
+            // All 8 are MAYBE (Latin script + no genre cache) but must surface via fallback, not an empty feed.
+            assertEquals(0, finalEmission.stats.acceptCount)
+            assertEquals(8, finalEmission.stats.maybeCount)
+            assertFalse(finalEmission.l5Pending)
+            val feedIds = finalEmission.shelves.flatMap { it.songs }.map { it.id }.toSet()
+            assertEquals(rapSongs.map { it.id }.toSet(), feedIds)
+            assertEquals(listOf("cold_rap_1", "cold_rap_2"), finalEmission.quickPicks.map { it.id })
+        }
+
+    @Test
+    fun emptyCachedFeedIsNotTreatedAsFreshAndDoesNotBlockFullRefresh() =
+        runTest {
+            val dao = FakeSpaceRecDao()
+            val emptyPayload = CachedSpaceFeedPayload(shelves = emptyList())
+            dao.feedCache["space_poisoned"] =
+                SpaceFeedCacheEntity(
+                    spaceId = "space_poisoned",
+                    payloadJson = SpaceRecDbAdapter.encodeCachedPayload(emptyPayload),
+                    savedAt = baseTimeMs - 60_000L,
+                    refreshSeq = 5,
+                )
+            val engine =
+                SpaceRecEngine(
+                    dao = dao,
+                    resolver = FakeSpaceTagResolver(isAvailable = false),
+                    clock = { baseTimeMs + currentTime },
+                    random = Random(16),
+                    youtubeSource = FakeSpaceYouTubeSource(),
+                    isBlocked = { false },
+                )
+
+            val liveSongs = (1..4).map { i -> song("live_$i", "Live Track $i", artistId = "a_live_$i") }
+            val emissions =
+                engine
+                    .refresh(
+                        spaceId = "space_poisoned",
+                        filter = SpaceFilterSpec(languages = listOf("english"), genres = listOf("hip_hop")),
+                        homeInput =
+                            SpaceHomeInput(
+                                primarySections = listOf(HomeSection("Home", liveSongs)),
+                                shelfLabels = defaultLabels,
+                            ),
+                    ).toList()
+
+            // Empty cache must not emit CACHE nor return early; full refresh runs and produces content.
+            assertFalse(emissions.any { it.phase == SpaceFeedPhase.CACHE })
+            assertEquals(listOf(SpaceFeedPhase.PARTIAL, SpaceFeedPhase.FINAL), emissions.map { it.phase })
+            val finalIds = emissions.last().shelves.flatMap { it.songs }.map { it.id }.toSet()
+            assertEquals(liveSongs.map { it.id }.toSet(), finalIds)
         }
 }
 
