@@ -419,6 +419,7 @@ kotlin {
                 implementation(libs.ktor.server.websockets)
                 implementation(libs.timber)
 
+                implementation(libs.mlkit.language.id)
                 implementation(libs.media3.exoplayer)
                 implementation(libs.media3.common)
                 implementation(libs.media3.datasource)
