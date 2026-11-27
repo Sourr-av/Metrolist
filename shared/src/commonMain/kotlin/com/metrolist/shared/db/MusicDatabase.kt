@@ -12,11 +12,13 @@ import androidx.room3.RoomDatabase
 import androidx.room3.RoomDatabaseConstructor
 import com.metrolist.shared.db.daos.DatabaseDao
 import com.metrolist.shared.db.daos.ImportTrackMatchDao
+import com.metrolist.shared.db.daos.LanguageSplitDao
 import com.metrolist.shared.db.daos.PendingScrobbleDao
 import com.metrolist.shared.db.daos.SpeedDialDao
 import com.metrolist.shared.db.entities.AlbumArtistMap
 import com.metrolist.shared.db.entities.AlbumEntity
 import com.metrolist.shared.db.entities.ArtistEntity
+import com.metrolist.shared.db.entities.ArtistLanguage
 import com.metrolist.shared.db.entities.CachedAudioEntity
 import com.metrolist.shared.db.entities.Event
 import com.metrolist.shared.db.entities.FormatEntity
@@ -26,6 +28,7 @@ import com.metrolist.shared.db.entities.HistorySnapshot
 import com.metrolist.shared.db.entities.HistoryStatExclusion
 import com.metrolist.shared.db.entities.ImportTrackMatch
 import com.metrolist.shared.db.entities.LyricsEntity
+import com.metrolist.shared.db.entities.OtherLanguageItem
 import com.metrolist.shared.db.entities.PlayCountEntity
 import com.metrolist.shared.db.entities.PlaylistEntity
 import com.metrolist.shared.db.entities.PlaylistSongMap
@@ -43,13 +46,19 @@ import com.metrolist.shared.db.entities.SortedSongArtistMap
 import com.metrolist.shared.db.entities.SpeedDialItem
 import com.metrolist.shared.scrobble.PendingScrobble
 
-const val DATABASE_VERSION = 68
+const val DATABASE_VERSION = 69
 
 internal val MIGRATION_67_68_SQL =
     listOf(
         "ALTER TABLE album ADD COLUMN description TEXT",
         "ALTER TABLE album ADD COLUMN otherVersions TEXT",
         "ALTER TABLE album ADD COLUMN tracksComplete INTEGER",
+    )
+
+internal val MIGRATION_68_69_SQL =
+    listOf(
+        "CREATE TABLE IF NOT EXISTS `artist_language` (`artistId` TEXT NOT NULL, `language` TEXT NOT NULL, `source` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`artistId`))",
+        "CREATE TABLE IF NOT EXISTS `other_language_item` (`videoId` TEXT NOT NULL, `payload` TEXT NOT NULL, `addedAt` INTEGER NOT NULL, PRIMARY KEY(`videoId`))",
     )
 
 internal val MIGRATION_66_67_SQL =
@@ -269,6 +278,8 @@ internal val MIGRATION_53_54_SQL =
         PodcastEntity::class,
         CachedAudioEntity::class,
         PendingScrobble::class,
+        ArtistLanguage::class,
+        OtherLanguageItem::class,
     ],
     views = [
         SortedSongArtistMap::class,
@@ -288,6 +299,8 @@ abstract class MusicDatabase : RoomDatabase() {
     abstract fun importTrackMatchDao(): ImportTrackMatchDao
 
     abstract fun speedDialDao(): SpeedDialDao
+
+    abstract fun languageSplitDao(): LanguageSplitDao
 }
 
 @Suppress("KotlinNoActualForExpect")
