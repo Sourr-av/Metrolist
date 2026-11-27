@@ -49,6 +49,73 @@ dependencyResolutionManagement {
             url = uri("https://maven.firstdark.dev/releases")
         }
     }
+
+    // Workaround for broken upstream publication metadata: the Gradle module metadata that
+    // JitPack serves for glyphmind 0.1.0 references "<artifact>-0.1.0.jar" for the
+    // metadata/sources variants of the iOS companion modules, but the repository actually
+    // hosts "<artifact>-0.1.0-metadata.jar" / "<artifact>-0.1.0-sources.jar". Without this
+    // correction, Android Studio sync fails in the IDE-only
+    // transformIos*CinteropDependenciesMetadataForIde tasks with
+    // "ArtifactNotFoundException: Could not find glyphmind-iosarm64-0.1.0.jar".
+    // Delete this block once glyphmind publishes corrected metadata
+    // (https://github.com/nyxiereal/glyphmind).
+    components {
+        all {
+            val artifact = id.name
+            val version = id.version
+            when (artifact) {
+                "glyphmind" ->
+                    withVariant("metadataSourcesElements") {
+                        withFiles {
+                            removeAllFiles()
+                            addFile("glyphmind-$version-sources.jar")
+                        }
+                    }
+                "glyphmind-iosarm64" -> {
+                    withVariant("iosArm64MetadataElements-published") {
+                        withFiles {
+                            removeAllFiles()
+                            addFile("glyphmind-iosarm64-$version-metadata.jar")
+                        }
+                    }
+                    withVariant("iosArm64SourcesElements-published") {
+                        withFiles {
+                            removeAllFiles()
+                            addFile("glyphmind-iosarm64-$version-sources.jar")
+                        }
+                    }
+                }
+                "glyphmind-iossimulatorarm64" -> {
+                    withVariant("iosSimulatorArm64MetadataElements-published") {
+                        withFiles {
+                            removeAllFiles()
+                            addFile("glyphmind-iossimulatorarm64-$version-metadata.jar")
+                        }
+                    }
+                    withVariant("iosSimulatorArm64SourcesElements-published") {
+                        withFiles {
+                            removeAllFiles()
+                            addFile("glyphmind-iossimulatorarm64-$version-sources.jar")
+                        }
+                    }
+                }
+                "glyphmind-iosx64" -> {
+                    withVariant("iosX64MetadataElements-published") {
+                        withFiles {
+                            removeAllFiles()
+                            addFile("glyphmind-iosx64-$version-metadata.jar")
+                        }
+                    }
+                    withVariant("iosX64SourcesElements-published") {
+                        withFiles {
+                            removeAllFiles()
+                            addFile("glyphmind-iosx64-$version-sources.jar")
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 rootProject.name = "Metrolist"
