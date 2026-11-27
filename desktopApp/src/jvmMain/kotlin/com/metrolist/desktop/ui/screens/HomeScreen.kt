@@ -21,6 +21,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -41,13 +42,18 @@ import com.metrolist.desktop.ui.components.PlaylistContextMenu
 import com.metrolist.desktop.ui.components.PodcastContextMenu
 import com.metrolist.desktop.ui.components.RetryableError
 import com.metrolist.desktop.ui.components.SongContextMenu
+import com.metrolist.shared.db.MusicDatabase
 import com.metrolist.shared.generated.resources.Res
 import com.metrolist.shared.generated.resources.home_unavailable
+import com.metrolist.shared.generated.resources.move_to_english
+import com.metrolist.shared.generated.resources.move_to_other_languages
 import com.metrolist.shared.generated.resources.pin_to_speed_dial
 import com.metrolist.shared.generated.resources.refetch
 import com.metrolist.shared.generated.resources.refetch_desc
 import com.metrolist.shared.generated.resources.shuffle
 import com.metrolist.shared.generated.resources.unpin_from_speed_dial
+import com.metrolist.shared.languagesplit.LanguageClass
+import com.metrolist.shared.languagesplit.applyLanguageOverride
 import com.metrolist.shared.model.AlbumItem
 import com.metrolist.shared.model.ArtistItem
 import com.metrolist.shared.model.BrowseItem
@@ -72,7 +78,9 @@ import com.metrolist.shared.ui.screens.homeContentText
 import com.metrolist.shared.ui.screens.pageKey
 import com.metrolist.shared.ui.screens.toHomeSection
 import com.metrolist.shared.ui.theme.MdSpacing
+import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.stringResource
+import org.koin.core.context.GlobalContext
 
 @Composable
 fun HomeScreen() {
@@ -81,6 +89,8 @@ fun HomeScreen() {
     val contextMenu = rememberCursorContextMenuState()
     var selectedMenuItem by remember { mutableStateOf<YTItem?>(null) }
     var showSurpriseMenu by remember { mutableStateOf(false) }
+    val menuScope = rememberCoroutineScope()
+    val menuDatabase = remember { GlobalContext.get().get<MusicDatabase>() }
 
     fun dismissContextMenu() {
         contextMenu.dismiss()
@@ -195,16 +205,38 @@ fun HomeScreen() {
                         expanded = contextMenu.expanded,
                         offset = contextMenu.offset,
                         additionalActions =
-                            listOf(
-                                PlayerMenuAction(
-                                    MetrolistIcons.Outlined.Refresh,
-                                    stringResource(Res.string.refetch),
-                                    stringResource(Res.string.refetch_desc),
-                                ) {
-                                    HomeState.refetchSongMetadata(item)
-                                    dismissContextMenu()
-                                },
-                            ),
+                            buildList {
+                                add(
+                                    PlayerMenuAction(
+                                        MetrolistIcons.Outlined.Refresh,
+                                        stringResource(Res.string.refetch),
+                                        stringResource(Res.string.refetch_desc),
+                                    ) {
+                                        HomeState.refetchSongMetadata(item)
+                                        dismissContextMenu()
+                                    },
+                                )
+                                if (item.artists.any { !it.id.isNullOrBlank() }) {
+                                    add(
+                                        PlayerMenuAction(
+                                            MetrolistIcons.Outlined.Language,
+                                            stringResource(Res.string.move_to_other_languages),
+                                        ) {
+                                            menuScope.launch { menuDatabase.applyLanguageOverride(item, LanguageClass.OTHER) }
+                                            dismissContextMenu()
+                                        },
+                                    )
+                                    add(
+                                        PlayerMenuAction(
+                                            MetrolistIcons.Outlined.Translate,
+                                            stringResource(Res.string.move_to_english),
+                                        ) {
+                                            menuScope.launch { menuDatabase.applyLanguageOverride(item, LanguageClass.ENGLISH) }
+                                            dismissContextMenu()
+                                        },
+                                    )
+                                }
+                            },
                         onDismiss = ::dismissContextMenu,
                     )
                 }

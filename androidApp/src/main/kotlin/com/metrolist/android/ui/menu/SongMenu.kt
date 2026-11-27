@@ -80,6 +80,7 @@ fun SongMenu(
     onShowInfo: (() -> Unit)? = null,
     leadingPrimaryActions: List<PlayerMenuAction> = emptyList(),
     trailingPrimaryActions: List<PlayerMenuAction> = emptyList(),
+    additionalActions: List<PlayerMenuAction> = emptyList(),
     showEditAction: Boolean = true,
     onHideFromLibrary: (() -> Unit)? = null,
 ) {
@@ -201,18 +202,19 @@ fun SongMenu(
             leadingPrimaryActions = leadingPrimaryActions,
             trailingPrimaryActions = trailingPrimaryActions,
             additionalActions =
-                listOfNotNull(
-                    onRefetch?.let {
-                        PlayerMenuAction(
-                            MetrolistIcons.Outlined.Refresh,
-                            stringResource(Res.string.refetch),
-                            stringResource(Res.string.refetch_desc),
-                        ) {
-                            it()
-                            onDismiss()
-                        }
-                    },
-                ),
+                additionalActions +
+                    listOfNotNull(
+                        onRefetch?.let {
+                            PlayerMenuAction(
+                                MetrolistIcons.Outlined.Refresh,
+                                stringResource(Res.string.refetch),
+                                stringResource(Res.string.refetch_desc),
+                            ) {
+                                it()
+                                onDismiss()
+                            }
+                        },
+                    ),
         )
     if (showDetails) {
         SongDetailsSheet(song = song, onDismiss = onDismiss)

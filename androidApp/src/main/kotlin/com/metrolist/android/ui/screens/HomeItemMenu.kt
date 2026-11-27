@@ -31,6 +31,8 @@ import com.metrolist.shared.db.refreshHistoryPlaylist
 import com.metrolist.shared.generated.resources.Res
 import com.metrolist.shared.generated.resources.home_load_item_failed
 import com.metrolist.shared.generated.resources.metadata_refreshed
+import com.metrolist.shared.generated.resources.move_to_english
+import com.metrolist.shared.generated.resources.move_to_other_languages
 import com.metrolist.shared.generated.resources.no_newer_metadata
 import com.metrolist.shared.generated.resources.no_playable_items
 import com.metrolist.shared.generated.resources.share_album
@@ -38,6 +40,8 @@ import com.metrolist.shared.generated.resources.share_artist
 import com.metrolist.shared.generated.resources.share_playlist
 import com.metrolist.shared.generated.resources.share_podcast
 import com.metrolist.shared.generated.resources.share_song
+import com.metrolist.shared.languagesplit.LanguageClass
+import com.metrolist.shared.languagesplit.applyLanguageOverride
 import com.metrolist.shared.model.AlbumItem
 import com.metrolist.shared.model.ArtistItem
 import com.metrolist.shared.model.BuiltinPlaylist
@@ -49,7 +53,9 @@ import com.metrolist.shared.model.YTItem
 import com.metrolist.shared.model.refetchSongMetadata
 import com.metrolist.shared.model.toSongItem
 import com.metrolist.shared.state.SongLikeState
+import com.metrolist.shared.ui.components.PlayerMenuAction
 import com.metrolist.shared.ui.components.PopupContent
+import com.metrolist.shared.ui.icons.MetrolistIcons
 import com.metrolist.shared.ui.menu.BuiltinPlaylistMenu
 import com.metrolist.shared.ui.menu.loadMediaItemSongs
 import com.metrolist.shared.utils.ShareUrls
@@ -188,6 +194,27 @@ internal fun HomeItemMenu(
                                 ).show()
                         }
                     },
+                    additionalActions =
+                        if (item is SongItem && song.artists.any { !it.id.isNullOrBlank() }) {
+                            listOf(
+                                PlayerMenuAction(
+                                    MetrolistIcons.Outlined.Language,
+                                    stringResource(Res.string.move_to_other_languages),
+                                ) {
+                                    scope.launch { database.applyLanguageOverride(song, LanguageClass.OTHER) }
+                                    onDismiss()
+                                },
+                                PlayerMenuAction(
+                                    MetrolistIcons.Outlined.Translate,
+                                    stringResource(Res.string.move_to_english),
+                                ) {
+                                    scope.launch { database.applyLanguageOverride(song, LanguageClass.ENGLISH) }
+                                    onDismiss()
+                                },
+                            )
+                        } else {
+                            emptyList()
+                        },
                 )
             }
 
