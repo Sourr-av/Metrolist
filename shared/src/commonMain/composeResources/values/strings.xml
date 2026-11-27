@@ -192,6 +192,12 @@
     <string name="refetch">Refetch</string>
     <!-- Translators: Imperative action label for share in the multiple app screens. -->
     <string name="share">Share</string>
+    <!-- Translators: Name of the Home chip and section that lists songs not classified as English. -->
+    <string name="other_languages">Other languages</string>
+    <!-- Translators: Imperative action to move a song out of Home into the Other languages screen. -->
+    <string name="move_to_other_languages">Move to Other languages</string>
+    <!-- Translators: Imperative action to move a song back into the English Home feed. -->
+    <string name="move_to_english">Move to English</string>
     <!-- Translators: Imperative action label for delete in the multiple app screens. -->
     <string name="delete">Delete</string>
     <!-- Translators: Imperative action label for remove from queue in the desktop player and playback queue. -->

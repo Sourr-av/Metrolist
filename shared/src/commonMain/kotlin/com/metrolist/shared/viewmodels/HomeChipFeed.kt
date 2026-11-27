@@ -57,7 +57,9 @@ internal fun HomeUiState.remainingHomeChips(): List<Chip> {
     if (selectedChip != null || continuation != null) return emptyList()
     val used = usedHomeChips.mapTo(mutableSetOf()) { it.endpoint() }
     return chips.distinctBy { it.endpoint() }.filter {
-        isFilteredHome(it.params, it.browseId ?: "FEmusic_home") && it.endpoint() !in used
+        // The Other languages chip is served from Room, never prefetched from YouTube.
+        it.browseId != OtherLanguagesChip.BROWSE_ID &&
+            isFilteredHome(it.params, it.browseId ?: "FEmusic_home") && it.endpoint() !in used
     }
 }
 

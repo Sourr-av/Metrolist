@@ -11,6 +11,13 @@ import com.metrolist.shared.db.entities.toSongItem
 import com.metrolist.shared.db.entities.withoutHistoryArtistPlaceholder
 import com.metrolist.shared.db.refreshSpeedDialArtwork
 import com.metrolist.shared.deviceconnect.DeviceCrypto
+import com.metrolist.shared.generated.resources.Res
+import com.metrolist.shared.generated.resources.other_languages
+import com.metrolist.shared.languagesplit.ArtistLanguageCache
+import com.metrolist.shared.languagesplit.LanguageClassifier
+import com.metrolist.shared.languagesplit.LanguageSignal
+import com.metrolist.shared.languagesplit.LanguageSplitter
+import com.metrolist.shared.languagesplit.NoOpLanguageSignal
 import com.metrolist.shared.model.AlbumItem
 import com.metrolist.shared.model.ArtistItem
 import com.metrolist.shared.model.ArtistTiny
@@ -77,6 +84,7 @@ import kotlinx.serialization.json.Json
 import kotlin.concurrent.Volatile
 import kotlin.io.encoding.Base64
 import kotlin.time.TimeSource
+import org.jetbrains.compose.resources.getString
 
 private const val HOME_CHIP_FRESHNESS_MS = 120_000L
 private const val HOME_CHIP_CACHE_SIZE = 6
@@ -234,8 +242,12 @@ class HomeViewModel(
     private val scope: CoroutineScope,
     private val httpClient: HttpClient = GlobalYouTube.client,
     var likedSongsName: String,
+    languageSignal: LanguageSignal = NoOpLanguageSignal,
 ) {
     val shelfCache = HomeShelfCache()
+
+    private val languageSplitter =
+        LanguageSplitter(LanguageClassifier(languageSignal), database.languageSplitDao())
 
     private val _uiState =
         MutableStateFlow(
@@ -328,8 +340,17 @@ class HomeViewModel(
                 }
         }
         scope.launch {
+            OtherLanguagesChip.resolveTitle(getString(Res.string.other_languages))
+        }
+        scope.launch {
             val cacheStart = TimeSource.Monotonic.markNow()
-            val restoredState = withContext(Dispatchers.Default) { loadLastHomePage() }
+            val restoredState =
+                withContext(Dispatchers.Default) {
+                    runCatching {
+                        ArtistLanguageCache.shared.load(database.languageSplitDao().getAllArtistLanguages())
+                    }
+                    loadLastHomePage()
+                }
             if (restoredState != null && restoreGeneration == contentLoadGeneration &&
                 restoredState.sessionKey == GlobalYouTube.innerTube.sessionSnapshot().homeCacheSessionKey()
             ) {
@@ -707,6 +728,10 @@ class HomeViewModel(
         loadJob?.cancel()
         loadJob =
             scope.launch(Dispatchers.Default) {
+                if (browseId == OtherLanguagesChip.BROWSE_ID) {
+                    loadOtherLanguagesContent(generation, sessionKey, onComplete)
+                    return@launch
+                }
                 if (!PlaybackNetworkStateStore.current.connected) {
                     _uiState.update(HomeUiState::asOfflineSnapshot)
                     scope.launch { onComplete() }
@@ -790,7 +815,9 @@ class HomeViewModel(
                             return@supervisorScope
                         }
                         val hydratedPrimarySections =
-                            rawHomeSections.withLocalSongMetadata(primaryLocalSongMetadata).withoutNonMusicalVideos()
+                            languageSplitter.split(
+                                rawHomeSections.withLocalSongMetadata(primaryLocalSongMetadata).withoutNonMusicalVideos(),
+                            )
                         var userPlaylistsSnapshot = userPlaylistsDeferred.await()
                         if (!isCurrentHomeLibraryRevision(userPlaylistsSnapshot.revision, librarySnapshotRevision)) {
                             userPlaylistsSnapshot = fetchUserPlaylists()
@@ -855,15 +882,6 @@ class HomeViewModel(
                             "primary home content published elapsedMs=${loadStartedAt.elapsedNow().inWholeMilliseconds}",
                         )
                         val exploreSections = exploreSectionsDeferred.await().getOrDefault(emptyList())
-                        val youtubeMusicEditorialPlaylists =
-                            (
-                                findSectionsByBrowseId(exploreSections, "FEmusic_community")
-                                    .flatMap { it.items.filterIsInstance<PlaylistItem>() }
-                                    .ifEmpty {
-                                        findSectionsByBrowseId(homePageData.sections, "FEmusic_community")
-                                            .flatMap { it.items.filterIsInstance<PlaylistItem>() }
-                                    }
-                            ).distinctBy { it.id }
                         val localQuickPicks = quickPicksDeferred.await().map { it.toSongItem() }
                         val localForgottenFavorites = forgottenFavoritesDeferred.await().map { it.toSongItem() }
                         val localKeepListening = keepListeningDeferred.await().map { it.toSongItem() }
@@ -886,11 +904,22 @@ class HomeViewModel(
                         ) {
                             return@supervisorScope
                         }
-                        val homeSections = rawHomeSections.withLocalSongMetadata(localSongMetadata)
+                        val homeSections = languageSplitter.split(rawHomeSections.withLocalSongMetadata(localSongMetadata))
                         val discoverySections =
-                            exploreSections
-                                .withLocalSongMetadata(localSongMetadata)
-                                .withoutNonMusicalVideos()
+                            languageSplitter.split(
+                                exploreSections
+                                    .withLocalSongMetadata(localSongMetadata)
+                                    .withoutNonMusicalVideos(),
+                            )
+                        val youtubeMusicEditorialPlaylists =
+                            (
+                                findSectionsByBrowseId(discoverySections, "FEmusic_community")
+                                    .flatMap { it.items.filterIsInstance<PlaylistItem>() }
+                                    .ifEmpty {
+                                        findSectionsByBrowseId(homeSections, "FEmusic_community")
+                                            .flatMap { it.items.filterIsInstance<PlaylistItem>() }
+                                    }
+                            ).distinctBy { it.id }
                         val rawCombined =
                             (homeSections + discoverySections)
                                 .withoutNonMusicalVideos()
@@ -921,10 +950,12 @@ class HomeViewModel(
                             ).distinctBy(::canonicalHomeItemId)
 
                         val speedDialSections =
-                            rawSpeedDialSections
-                                .withLocalSongMetadata(localSongMetadata)
-                                .withoutNonMusicalVideos()
-                                .filterNot { it.isLibrarySection(userPlaylistIds) }
+                            languageSplitter.split(
+                                rawSpeedDialSections
+                                    .withLocalSongMetadata(localSongMetadata)
+                                    .withoutNonMusicalVideos()
+                                    .filterNot { it.isLibrarySection(userPlaylistIds) },
+                            )
                         Logger.d(
                             HOME_LOG_TAG,
                             "metadata merge localSongs=${localSongMetadata.size} homeSections=${homeSections.size} " +
@@ -1158,7 +1189,84 @@ class HomeViewModel(
             }
     }
 
+    private suspend fun loadOtherLanguagesContent(
+        generation: Long,
+        sessionKey: String,
+        onComplete: () -> Unit,
+    ) {
+        try {
+            OtherLanguagesChip.resolveTitle(getString(Res.string.other_languages))
+            val items = languageSplitter.loadStoredOtherLanguageItems()
+            Logger.d(LanguageSplitter.LOG_TAG, "other-languages screen items=${items.size}")
+            val section = items.takeIf { it.isNotEmpty() }?.let { HomeSection(title = OtherLanguagesChip.title, items = it) }
+            val sections = listOfNotNull(section)
+            withContext(Dispatchers.Main.immediate) {
+                if (generation != contentLoadGeneration ||
+                    sessionKey != GlobalYouTube.innerTube.sessionSnapshot().homeCacheSessionKey()
+                ) {
+                    return@withContext
+                }
+                val chip = OtherLanguagesChip.chip()
+                val newState =
+                    _uiState.value.copy(
+                        contentLocaleSignature = currentContentLocaleSignature(),
+                        sessionKey = sessionKey,
+                        data = sections,
+                        isLoading = false,
+                        isRefreshing = false,
+                        isRevalidating = false,
+                        isContentLoading = false,
+                        isAllContentPending = false,
+                        isLoadingMore = false,
+                        loadMoreError = false,
+                        error = null,
+                        selectedChip = chip,
+                        chips = homeChipsForSelection(_uiState.value.chips, chip),
+                        continuation = null,
+                        chipFeeds = emptyList(),
+                        usedHomeChips = emptyList(),
+                        trending = emptyList(),
+                        albumCharts = emptyList(),
+                        quickPicks = emptyList(),
+                        speedDialItems = emptyList(),
+                        newReleases = emptyList(),
+                        keepListening = emptyList(),
+                        forgottenFavorites = emptyList(),
+                        communityPlaylist = emptyList(),
+                        moodsAndGenres = emptyList(),
+                        recentlyPlayed = emptyList(),
+                        recapPlaylists = emptyList(),
+                        podcasts = emptyList(),
+                        similarRecommendations = emptyList(),
+                        discoverySections = emptyList(),
+                        sections = uncategorizedHomeSections(sections),
+                    ).withoutBlockedContent()
+                _uiState.value = newState
+                cachedSelectedChipContent = newState
+                cacheChipContent(chip, newState)
+                saveLastHomePage(newState)
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            Logger.w(LanguageSplitter.LOG_TAG, "Failed to load Other languages content", error)
+            if (generation == contentLoadGeneration) {
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        isRefreshing = false,
+                        isContentLoading = false,
+                        error = error.message,
+                    )
+                }
+            }
+        } finally {
+            scope.launch { onComplete() }
+        }
+    }
+
     fun loadMoreSections() {
+        if (_uiState.value.selectedChip?.browseId == OtherLanguagesChip.BROWSE_ID) return
         val continuation = _uiState.value.continuation
         if (!paginationInProgress.compareAndSet(false, true)) return
         if (continuation == null) {
@@ -1180,7 +1288,7 @@ class HomeViewModel(
                     if (generation != contentLoadGeneration || _uiState.value.continuation != continuation) return@launch
                     val pageMetadata = loadLocalSongMetadata(newSections)
                     if (generation != contentLoadGeneration || _uiState.value.continuation != continuation) return@launch
-                    val hydratedNewSections = newSections.withLocalSongMetadata(pageMetadata)
+                    val hydratedNewSections = languageSplitter.split(newSections.withLocalSongMetadata(pageMetadata))
                     if (isFilteredHome(_uiState.value.selectedChip?.params, _uiState.value.selectedChip?.browseId ?: "FEmusic_home")) {
                         val currentState = _uiState.value
                         val merged =
@@ -1243,10 +1351,12 @@ class HomeViewModel(
     }
 
     private suspend fun prepareChipSections(sections: List<HomeSection>): List<HomeSection> =
-        sections
-            .withLocalSongMetadata(loadLocalSongMetadata(sections))
-            .withoutRegionalCharts(AuthManager().isLoggedIn)
-            .withoutNonMusicalVideos()
+        languageSplitter.split(
+            sections
+                .withLocalSongMetadata(loadLocalSongMetadata(sections))
+                .withoutRegionalCharts(AuthManager().isLoggedIn)
+                .withoutNonMusicalVideos(),
+        )
 
     private fun preloadMoreSections() {
         val selectedChip = _uiState.value.selectedChip
@@ -1268,7 +1378,7 @@ class HomeViewModel(
                     if (generation != contentLoadGeneration || _uiState.value.continuation != continuation) return@launch
                     val pageMetadata = loadLocalSongMetadata(newSections)
                     if (generation != contentLoadGeneration || _uiState.value.continuation != continuation) return@launch
-                    val hydratedNewSections = newSections.withLocalSongMetadata(pageMetadata)
+                    val hydratedNewSections = languageSplitter.split(newSections.withLocalSongMetadata(pageMetadata))
                     val merged = (cachedAllContent ?: _uiState.value).withMergedSections(hydratedNewSections, nextContinuation)
                     cacheAllContentState(merged)
                     _uiState.value = merged.withoutBlockedContent().copy(isLoadingMore = true)
@@ -1780,7 +1890,7 @@ class HomeViewModel(
         saveLastHomePage(homeContentForCurrentSelection(_uiState.value, cachedAllContent, cachedSelectedChipContent))
     }
 
-    private fun loadLastHomePage(): HomeUiState? {
+    private suspend fun loadLastHomePage(): HomeUiState? {
         val saved = Settings.shared.lastHomePageJson
         if (saved.isBlank()) return null
         return try {
@@ -1792,7 +1902,17 @@ class HomeViewModel(
                         currentContentLocaleSignature(),
                         GlobalYouTube.innerTube.sessionSnapshot().homeCacheSessionKey(),
                     )
-                }?.startupSnapshot()
+                }?.let { state ->
+                    val splitData = state.data?.let { languageSplitter.split(it) }
+                    val splitSections =
+                        if (state.sections.isEmpty()) {
+                            emptyList()
+                        } else {
+                            languageSplitter.split(state.sections)
+                        }
+                    state.copy(data = splitData, sections = splitSections)
+                }
+                ?.startupSnapshot()
                 ?.normalizeCachedSections()
                 ?.let { it.copy(chips = homeChipsForSelection(it.chips, it.selectedChip)) }
         } catch (_: Exception) {
@@ -2377,13 +2497,34 @@ internal fun InnerTube.SessionSnapshot.homeSessionIdentity(): HomeSessionIdentit
 
 internal fun shouldApplyGlobalSpeedDialPins(selectedChip: Chip?): Boolean = selectedChip == null
 
+internal object OtherLanguagesChip {
+    const val BROWSE_ID = "OTHER_LANGUAGES"
+
+    @Volatile
+    var title: String = "Other languages"
+        private set
+
+    fun chip(): Chip = Chip(title = title, browseId = BROWSE_ID)
+
+    fun resolveTitle(value: String) {
+        title = value
+    }
+}
+
 internal fun homeChipsForSelection(
     chips: List<Chip>,
     selectedChip: Chip?,
-): List<Chip> =
-    chips.map { chip ->
+): List<Chip> {
+    val withOtherLanguages =
+        if (chips.any { it.browseId == OtherLanguagesChip.BROWSE_ID }) {
+            chips
+        } else {
+            listOf(OtherLanguagesChip.chip()) + chips
+        }
+    return withOtherLanguages.map { chip ->
         if (chip.title == selectedChip?.title) selectedChip else chip
     }
+}
 
 internal fun isFilteredHome(
     params: String?,
